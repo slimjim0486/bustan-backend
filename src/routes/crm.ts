@@ -44,6 +44,7 @@ import {
   sendWhatsAppTemplate,
   subscribeWhatsAppBusinessAccount,
 } from "@/lib/whatsapp-business";
+import { ORDER_TEMPLATE_DEFINITIONS } from "@/lib/whatsapp-order-templates";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { requireAuth } from "@/middleware/auth";
 
@@ -189,6 +190,67 @@ function buildTemplateLibrary(records: Array<{
 
     return {
       ...template,
+      status: record?.status ?? "draft",
+      metaTemplateId: record?.metaTemplateId ?? null,
+      rejectionReason: record?.rejectionReason ?? null,
+      lastSyncedAt: record?.lastSyncedAt ?? null,
+    };
+  });
+}
+
+// Static metadata so the CRM UI can render "this fires when X happens" without
+// asking the order state machine. Keyed by template name so adding a new
+// utility template forces a compile-time choice about where it fires.
+const TRANSACTIONAL_TEMPLATE_METADATA: Record<
+  (typeof ORDER_TEMPLATE_DEFINITIONS)[number]["name"],
+  { trigger: string; recipient: "customer" | "restaurant" }
+> = {
+  order_received_v1: {
+    trigger: "Customer places a new order on the menu page.",
+    recipient: "customer",
+  },
+  order_accepted_v1: {
+    trigger: "You tap Accept on a new order in the dashboard.",
+    recipient: "customer",
+  },
+  order_ready_v1: {
+    trigger: "You tap Mark Ready on the order (pickup, delivery, or dine-in).",
+    recipient: "customer",
+  },
+  order_cancelled_v1: {
+    trigger: "Order is rejected, expires after 15 min, or fails payment.",
+    recipient: "customer",
+  },
+  order_new_alert_v1: {
+    trigger: "A new order needs the restaurant's attention.",
+    recipient: "restaurant",
+  },
+};
+
+function buildTransactionalTemplateLibrary(records: Array<{
+  name: string;
+  language: string;
+  status: string;
+  metaTemplateId: string | null;
+  rejectionReason: string | null;
+  lastSyncedAt: Date | null;
+}>) {
+  return ORDER_TEMPLATE_DEFINITIONS.map((template) => {
+    const record = records.find(
+      (entry) => entry.name === template.name && entry.language === template.language
+    );
+    const meta = TRANSACTIONAL_TEMPLATE_METADATA[template.name];
+
+    return {
+      name: template.name,
+      label: template.label,
+      category: template.category,
+      language: template.language,
+      body: template.body,
+      variables: template.variables,
+      footer: template.footer ?? null,
+      trigger: meta.trigger,
+      recipient: meta.recipient,
       status: record?.status ?? "draft",
       metaTemplateId: record?.metaTemplateId ?? null,
       rejectionReason: record?.rejectionReason ?? null,
@@ -457,6 +519,7 @@ export const crmRoute = new Hono<{
           embeddedSignup: getEmbeddedSignupConfig(),
           integration,
           templates: buildTemplateLibrary(templateRecords),
+          transactionalTemplates: buildTransactionalTemplateLibrary(templateRecords),
           conversations: conversations.map((conversation) => {
             const c = conversation.customer;
             // referralCapturedAt is non-null IFF the referral was
@@ -789,11 +852,28 @@ export const crmRoute = new Hono<{
       const syncedAt = new Date();
 
       for (const template of templates) {
-        const libraryTemplate = WHATSAPP_TEMPLATE_LIBRARY.find((entry) => entry.name === template.name);
+        // Look up first in the marketing library, then in the utility
+        // (order) template definitions. Either match gives us a nicer
+        // label and known `variables` array than Meta's response alone.
+        const marketingLibraryTemplate = WHATSAPP_TEMPLATE_LIBRARY.find(
+          (entry) => entry.name === template.name
+        );
+        const transactionalLibraryTemplate = ORDER_TEMPLATE_DEFINITIONS.find(
+          (entry) => entry.name === template.name
+        );
+        const libraryLabel =
+          marketingLibraryTemplate?.label ?? transactionalLibraryTemplate?.label;
+        const libraryCategory =
+          marketingLibraryTemplate?.category ?? transactionalLibraryTemplate?.category;
+        const libraryVariables =
+          marketingLibraryTemplate?.variables ??
+          transactionalLibraryTemplate?.variables ??
+          [];
+        const libraryBody =
+          marketingLibraryTemplate?.body ?? transactionalLibraryTemplate?.body ?? "";
         const body =
           template.components?.find((component) => component.type?.toUpperCase() === "BODY")?.text ??
-          libraryTemplate?.body ??
-          "";
+          libraryBody;
 
         await prisma.whatsAppTemplate.upsert({
           where: {
@@ -807,12 +887,12 @@ export const crmRoute = new Hono<{
             restaurantId,
             integrationId: integration.id,
             name: template.name,
-            label: libraryTemplate?.label ?? template.name.replace(/_/g, " "),
-            category: template.category ?? libraryTemplate?.category ?? "MARKETING",
+            label: libraryLabel ?? template.name.replace(/_/g, " "),
+            category: template.category ?? libraryCategory ?? "MARKETING",
             language: template.language ?? "en",
             status: mapTemplateStatus(template.status),
             body,
-            variables: libraryTemplate?.variables ?? [],
+            variables: libraryVariables,
             metaTemplateId: template.id ?? null,
             rejectionReason:
               template.rejected_reason && template.rejected_reason !== "NONE"
@@ -822,7 +902,7 @@ export const crmRoute = new Hono<{
           },
           update: {
             integrationId: integration.id,
-            category: template.category ?? libraryTemplate?.category ?? "MARKETING",
+            category: template.category ?? libraryCategory ?? "MARKETING",
             status: mapTemplateStatus(template.status),
             body,
             metaTemplateId: template.id ?? null,
