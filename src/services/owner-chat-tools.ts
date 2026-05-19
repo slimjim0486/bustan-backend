@@ -583,7 +583,7 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
   {
     name: "get_bustan_info",
     description:
-      "Look up an accurate, current fact about Bustan itself — pricing, plans, the free trial, AI feature limits, signup flow, WhatsApp integration, data privacy, refunds, support, languages, or how the platform works. ALWAYS call this tool first when the owner asks anything about Bustan as a product (pricing, what's included on another tier, refunds, deletion, Arabic support, etc.). Never guess Bustan facts from memory.",
+      "Look up an accurate, current fact about Bustan itself — pricing, plans, the free trial, AI feature limits, signup flow, WhatsApp (integration, onboarding, templates, compliance), Google integrations, Portfolio multi-brand, growth tools, data privacy, refunds, support, languages, or how the platform works. ALWAYS call this tool first when the owner asks anything about Bustan as a product (pricing, what's included on another tier, refunds, deletion, Arabic support, how to connect WhatsApp, troubleshooting onboarding, etc.). Never guess Bustan facts from memory.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -591,7 +591,7 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
           type: "string",
           enum: getAllBustanTopics(),
           description:
-            "Topic key. Pick the closest match: overview, pricing, trial, signup, ai_features, menu_import, public_page, whatsapp, languages, data_privacy, refunds, support, for_owners.",
+            "Topic key. Pick the closest match. WhatsApp-specific topics: whatsapp (general what-is), whatsapp_onboarding (connecting, Embedded Signup, prerequisites, troubleshooting setup), whatsapp_templates (transactional vs marketing, what auto-fires, customising copy, submission and rejection), whatsapp_compliance (rules to not get blocked, quality rating, tiers, frequency, opt-in). Other topics: overview, pricing, trial, signup, ai_features, menu_import, public_page, google_integrations, portfolio, growth_tools, languages, data_privacy, refunds, support, for_owners.",
         },
         query: {
           type: "string",
