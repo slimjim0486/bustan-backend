@@ -21,6 +21,11 @@ import type { AdStudioBrief, RestaurantBrandContext } from "./types";
 const VALID_COUNTRY_CODES: CountryCode[] = ["AE", "SA", "QA", "KW", "BH", "OM", "EG", "JO", "LB"];
 const VALID_FUNNEL_STAGES: FunnelStage[] = ["tofu", "mofu", "bofu", "retention"];
 const VALID_BUDGET_TIERS = ["lean", "standard", "aggressive"] as const;
+// Creative output format. "static_multi" is the legacy 6-hero-image path;
+// "slideshow_tiktok" produces a single 5-frame 1080×1350 slideshow built
+// from owner-uploaded menu photos. Switch is read by the worker.
+export const CREATIVE_FORMATS = ["static_multi", "slideshow_tiktok"] as const;
+export type CreativeFormat = (typeof CREATIVE_FORMATS)[number];
 
 // Sanitize free-text inputs that flow into LLM prompts. Strip newlines and
 // angle/bracket characters so a malicious owner can't break out of our
@@ -48,6 +53,7 @@ export const briefInputSchema = z
     durationWeeks: z.number().int().min(1).max(26).optional(),
     primaryDishId: z.string().cuid().optional(),
     brandVoice: safeFreeText(500).optional(),
+    creativeFormat: z.enum(CREATIVE_FORMATS).optional().default("static_multi"),
   })
   .strict();
 

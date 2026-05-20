@@ -28,6 +28,10 @@ import {
 } from "@/services/ad-studio-ai";
 import { randomBytes } from "node:crypto";
 import { enqueueAdStudioGeneration, enqueueRegenImage } from "@/queue/ad-studio-jobs";
+import { buildSlideshowFrames } from "@/services/ad-studio-ai/slideshow-compositor";
+import { generateSlideshowCaptions } from "@/services/ad-studio-ai/slideshow-captions";
+import { hydrateBrief } from "@/services/ad-studio-ai";
+import { SLIDESHOW_FRAME_COUNT } from "@/services/ad-studio-ai/slideshow-dish-picker";
 import { runEventStagerForRestaurantNow } from "@/queue/event-stager";
 import { buildAndUploadBundle } from "@/services/ad-studio-ai/export-bundle";
 import { buildMetaExport } from "@/services/ad-studio-meta-export";
@@ -466,6 +470,280 @@ adStudioRoute.patch("/creatives/:creativeId", async (c) => {
     });
 
     return c.json({ creative: updated });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
+// =============================================================================
+// Slideshow (TikTok Photo Mode) — frame swap + caption regenerate
+// =============================================================================
+
+interface SlideshowStateFrame {
+  menuItemId: string;
+  headline: string;
+  headlineAr: string | null;
+  url: string | null;
+}
+interface SlideshowState {
+  frames: SlideshowStateFrame[];
+  postBody: string;
+  postBodyAr: string | null;
+  ctaText: string;
+  ctaTextAr: string | null;
+  generatedAt: string;
+}
+
+function readSlideshowState(project: { briefJson: unknown }): SlideshowState {
+  const brief = project.briefJson;
+  if (!brief || typeof brief !== "object" || Array.isArray(brief)) {
+    throw new ApiError("Project is missing slideshow state", 409);
+  }
+  const slot = (brief as Record<string, unknown>)._slideshow;
+  if (!slot || typeof slot !== "object") {
+    throw new ApiError("Project does not have a slideshow yet — generate first", 409);
+  }
+  return slot as unknown as SlideshowState;
+}
+
+async function writeSlideshowState(projectId: string, state: SlideshowState) {
+  const current = await prisma.adProject.findUnique({
+    where: { id: projectId },
+    select: { briefJson: true },
+  });
+  const persisted =
+    current?.briefJson && typeof current.briefJson === "object" && !Array.isArray(current.briefJson)
+      ? (current.briefJson as Record<string, unknown>)
+      : {};
+  await prisma.adProject.update({
+    where: { id: projectId },
+    data: {
+      briefJson: {
+        ...persisted,
+        _slideshow: state,
+      } as unknown as Prisma.InputJsonValue,
+    },
+  });
+}
+
+const swapFrameSchema = z.object({
+  menuItemId: z.string().cuid(),
+  /** Optional new headline. When omitted, the existing frame headline is reused. */
+  headline: z.string().min(1).max(32).optional(),
+});
+
+adStudioRoute.post("/projects/:id/slideshow/frames/:index/swap", async (c) => {
+  try {
+    const auth = c.var.auth;
+    const indexParam = c.req.param("index");
+    const frameIndex = Number.parseInt(indexParam, 10);
+    if (
+      !Number.isInteger(frameIndex) ||
+      frameIndex < 0 ||
+      frameIndex >= SLIDESHOW_FRAME_COUNT
+    ) {
+      throw new ApiError(
+        `Frame index must be between 0 and ${SLIDESHOW_FRAME_COUNT - 1}`,
+        400
+      );
+    }
+
+    const project = await loadProjectForUser(c.req.param("id"), auth.clerkId);
+    ensureAdStudioEnabled(project.restaurant);
+
+    // Don't allow edits while generation is in flight — the worker is mid-write
+    // and we'd race on briefJson._slideshow. Once status is ready/exported,
+    // the project is stable enough to mutate.
+    if (project.status !== "ready" && project.status !== "exported") {
+      throw new ApiError(
+        `Cannot edit a slideshow while it's ${project.status}. Wait for generation to finish.`,
+        409
+      );
+    }
+
+    const body = await c.req.json();
+    const parsed = swapFrameSchema.parse(body);
+
+    // Tenant-check the menu item and require a ready image.
+    const item = await prisma.menuItem.findFirst({
+      where: { id: parsed.menuItemId, restaurantId: project.restaurantId },
+      select: { id: true, imageStatus: true, imageUrl: true },
+    });
+    if (!item) throw new ApiError("Menu item not found in this restaurant", 404);
+    if (item.imageStatus !== "ready" && item.imageStatus !== "generated") {
+      throw new ApiError("Menu item has no ready image to use in the slideshow", 422);
+    }
+
+    const state = readSlideshowState(project);
+    if (!state.frames[frameIndex]) {
+      throw new ApiError("Slideshow does not have a frame at this index", 409);
+    }
+    const newHeadline = parsed.headline ?? state.frames[frameIndex].headline ?? "";
+
+    // Re-composite ONLY this frame.
+    const composed = await buildSlideshowFrames({
+      restaurantId: project.restaurantId,
+      frames: [{ menuItemId: parsed.menuItemId, headline: newHeadline }],
+    });
+    if (composed.frameUrls.length !== 1) {
+      const reason = composed.perFrame[0]?.reason ?? "unknown";
+      throw new ApiError(`Failed to compose replacement frame: ${reason}`, 502);
+    }
+    const newUrl = composed.frameUrls[0];
+
+    // Mutate state + write back.
+    const nextFrames = state.frames.map((f, i) =>
+      i === frameIndex
+        ? { ...f, menuItemId: parsed.menuItemId, headline: newHeadline, url: newUrl }
+        : f
+    );
+    const nextState: SlideshowState = { ...state, frames: nextFrames };
+    await writeSlideshowState(project.id, nextState);
+
+    // Mirror the URL array into AdCreative.sabtPackSlideshowFrames (the slot
+    // the frontend renderer reads). Variant=1 by orchestrator convention.
+    const creative = await prisma.adCreative.findFirst({
+      where: { projectId: project.id, variant: 1 },
+      select: { id: true },
+    });
+    if (creative) {
+      await prisma.adCreative.update({
+        where: { id: creative.id },
+        data: {
+          sabtPackSlideshowFrames: nextFrames.map((f) => f.url) as unknown as Prisma.InputJsonValue,
+          heroImageUrl: nextFrames[0]?.url ?? null,
+          // Keep AdCreative.headline aligned with frame 0 so list views stay in sync.
+          ...(frameIndex === 0 ? { headline: newHeadline } : {}),
+          isEdited: true,
+        },
+      });
+    }
+
+    return c.json({ ok: true, frameIndex, url: newUrl, state: nextState });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
+adStudioRoute.post("/projects/:id/slideshow/captions/regenerate", async (c) => {
+  try {
+    const auth = c.var.auth;
+    const project = await loadProjectForUser(c.req.param("id"), auth.clerkId);
+    ensureAdStudioEnabled(project.restaurant);
+
+    if (project.status !== "ready" && project.status !== "exported") {
+      throw new ApiError(
+        `Cannot regenerate captions while project is ${project.status}.`,
+        409
+      );
+    }
+    await enforceGenerateRateLimit(project.restaurantId);
+
+    const state = readSlideshowState(project);
+    if (state.frames.length !== SLIDESHOW_FRAME_COUNT) {
+      throw new ApiError(
+        `Slideshow does not have ${SLIDESHOW_FRAME_COUNT} frames`,
+        409
+      );
+    }
+
+    // Load fresh dish context for the current 5 menu items in frame order.
+    const ids = state.frames.map((f) => f.menuItemId);
+    const items = await prisma.menuItem.findMany({
+      where: { id: { in: ids }, restaurantId: project.restaurantId },
+      select: { id: true, name: true, description: true, price: true },
+    });
+    const byId = new Map(items.map((i) => [i.id, i]));
+    const dishes = ids
+      .map((id) => byId.get(id))
+      .filter((d): d is NonNullable<typeof d> => Boolean(d))
+      .map((d) => ({
+        id: d.id,
+        name: d.name,
+        description: d.description,
+        price: d.price ? Number(d.price) : null,
+      }));
+    if (dishes.length !== SLIDESHOW_FRAME_COUNT) {
+      throw new ApiError("One or more slideshow dishes were removed from the menu", 409);
+    }
+
+    const briefInput = {
+      restaurantId: project.restaurantId,
+      name: project.name,
+      campaignType: project.campaignType,
+      goal: project.goal,
+      countries: project.countries,
+      cuisines: project.cuisines,
+      targetPlatforms: project.targetPlatforms,
+      budgetTier: project.budgetTier,
+      budgetAed: project.budgetAed,
+      durationWeeks: project.durationWeeks ?? undefined,
+      primaryDishId: project.primaryDishId ?? undefined,
+      brandVoice: project.brandVoice ?? undefined,
+    };
+    const { brief, brand } = await hydrateBrief(briefInput as never);
+
+    const ARABIC_FIRST = new Set(["SA", "KW", "BH", "OM", "QA"]);
+    const bilingual = brief.countries.some((c) => ARABIC_FIRST.has(c));
+
+    const totals = { tokensIn: 0, tokensOut: 0, costUsd: 0 };
+    const captions = await generateSlideshowCaptions({
+      brief,
+      brand,
+      dishes,
+      bilingual,
+      totals,
+    });
+
+    // Recomposite all 5 frames with the new headlines.
+    const composed = await buildSlideshowFrames({
+      restaurantId: project.restaurantId,
+      frames: dishes.map((d, i) => ({
+        menuItemId: d.id,
+        headline: captions.frames[i]?.headline ?? "",
+      })),
+    });
+    if (!composed.fullSlideshow) {
+      throw new ApiError("Failed to recomposite all 5 frames", 502);
+    }
+
+    const nextState: SlideshowState = {
+      frames: dishes.map((d, i) => ({
+        menuItemId: d.id,
+        headline: captions.frames[i]?.headline ?? "",
+        headlineAr: captions.frames[i]?.headlineAr ?? null,
+        url: composed.frameUrls[i] ?? null,
+      })),
+      postBody: captions.postBody,
+      postBodyAr: captions.postBodyAr ?? null,
+      ctaText: captions.ctaText,
+      ctaTextAr: captions.ctaTextAr ?? null,
+      generatedAt: new Date().toISOString(),
+    };
+    await writeSlideshowState(project.id, nextState);
+
+    const creative = await prisma.adCreative.findFirst({
+      where: { projectId: project.id, variant: 1 },
+      select: { id: true },
+    });
+    if (creative) {
+      await prisma.adCreative.update({
+        where: { id: creative.id },
+        data: {
+          sabtPackSlideshowFrames: composed.frameUrls as unknown as Prisma.InputJsonValue,
+          heroImageUrl: composed.frameUrls[0] ?? null,
+          headline: captions.frames[0]?.headline ?? "Slideshow",
+          headlineAr: captions.frames[0]?.headlineAr ?? null,
+          primaryText: captions.postBody,
+          primaryTextAr: captions.postBodyAr ?? null,
+          ctaText: captions.ctaText,
+          ctaTextAr: captions.ctaTextAr ?? null,
+          isEdited: false,
+        },
+      });
+    }
+
+    return c.json({ ok: true, state: nextState, costUsd: totals.costUsd });
   } catch (error) {
     return errorResponse(c, error);
   }

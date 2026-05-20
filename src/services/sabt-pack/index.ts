@@ -29,6 +29,10 @@ import {
   type WeeklyStrategyMenuItem,
 } from "@/services/ad-studio-ai/weekly-strategy";
 import { buildSlideshowFrames } from "@/services/ad-studio-ai/slideshow-compositor";
+import {
+  pickSlideshowDishes,
+  SLIDESHOW_FRAME_COUNT,
+} from "@/services/ad-studio-ai/slideshow-dish-picker";
 import type {
   AdStudioBrief,
   CopyVariant,
@@ -43,7 +47,6 @@ import type { CountryCode, CuisineFit, PlatformId } from "@/services/ad-studio/t
 
 const MENU_ITEMS_FOR_PLANNING = 20;
 const MIN_SLOTS_FOR_READY = 5;
-const SLIDESHOW_FRAME_COUNT = 5;
 const SLIDESHOW_FALLBACK_HEADLINE = "This week at our table.";
 
 /** Realistic per-image cost estimate. Gemini is $0.04 (the default provider);
@@ -165,35 +168,6 @@ async function loadMenuItemsForPlanning(
     priceAed: Number(m.price),
     hasReadyImage: m.imageStatus === "ready" || m.imageStatus === "generated",
   }));
-}
-
-/** Pick 5 menu items with ready images for the slideshow. Falls back to
- *  whatever the strategy already chose if not enough ready-imaged items
- *  exist; caller treats <5 as a downgrade and skips slot 1. */
-async function pickSlideshowDishes(
-  restaurantId: string,
-  preferDishId: string
-): Promise<string[]> {
-  const ready = await prisma.menuItem.findMany({
-    where: {
-      restaurantId,
-      isAvailable: true,
-      OR: [{ imageStatus: "ready" }, { imageStatus: "generated" }],
-    },
-    select: { id: true },
-    orderBy: [{ price: "desc" }, { displayOrder: "asc" }],
-    take: SLIDESHOW_FRAME_COUNT + 3,
-  });
-
-  const chosen: string[] = [];
-  if (preferDishId && ready.some((r) => r.id === preferDishId)) {
-    chosen.push(preferDishId);
-  }
-  for (const r of ready) {
-    if (chosen.length >= SLIDESHOW_FRAME_COUNT) break;
-    if (!chosen.includes(r.id)) chosen.push(r.id);
-  }
-  return chosen;
 }
 
 /** Synthesize a single-archetype strategy from a Sabt Pack slot so the
@@ -367,7 +341,10 @@ async function runSlot(args: {
   // Step 4: slideshow frames (slot 1 only).
   if (args.slot.slot === 1) {
     try {
-      const dishIds = await pickSlideshowDishes(args.restaurantId, args.slot.primaryDishId);
+      const dishIds = await pickSlideshowDishes({
+        restaurantId: args.restaurantId,
+        preferDishId: args.slot.primaryDishId,
+      });
       if (dishIds.length < SLIDESHOW_FRAME_COUNT) {
         reason = reason ?? `slideshow_only_${dishIds.length}_ready_dishes`;
       } else {

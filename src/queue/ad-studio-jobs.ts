@@ -15,6 +15,11 @@ import {
 import { runImagePromptPass } from "@/services/ad-studio-ai/claude-orchestrator";
 import { runSafetyPass } from "@/services/ad-studio-ai/safety";
 import { generateHeroImage } from "@/services/ad-studio-ai/image-gen";
+import { runSlideshowBuilder } from "@/services/ad-studio-ai/slideshow-builder";
+import {
+  CREATIVE_FORMATS,
+  type CreativeFormat,
+} from "@/services/ad-studio-ai/brief-builder";
 import { syncLiveCampaignFromMeta } from "@/services/meta-ads-oauth";
 import { getBoss } from "@/queue/image-generation";
 
@@ -240,6 +245,15 @@ async function processAdStudioJob(job: AdStudioWorkerJob) {
   try {
     // Re-build the brief from the persisted brief snapshot.
     const persistedBrief = project.briefJson as Prisma.JsonObject;
+    const persistedFormat =
+      typeof persistedBrief?.creativeFormat === "string"
+        ? (persistedBrief.creativeFormat as string)
+        : "static_multi";
+    const creativeFormat: CreativeFormat = (CREATIVE_FORMATS as readonly string[]).includes(
+      persistedFormat
+    )
+      ? (persistedFormat as CreativeFormat)
+      : "static_multi";
     const briefInput = {
       restaurantId: project.restaurantId,
       name: project.name,
@@ -253,8 +267,38 @@ async function processAdStudioJob(job: AdStudioWorkerJob) {
       durationWeeks: project.durationWeeks ?? undefined,
       primaryDishId: project.primaryDishId ?? undefined,
       brandVoice: project.brandVoice ?? undefined,
+      creativeFormat,
     };
     const { brief, brand } = await hydrateBrief(briefInput as never);
+
+    // Slideshow path — single 5-frame creative built from owner-uploaded
+    // menu photos with Claude-written on-image captions. Short-circuits the
+    // standard 6-variant strategy/copy/image pipeline.
+    if (creativeFormat === "slideshow_tiktok") {
+      const slideshow = await runSlideshowBuilder({
+        projectId,
+        brief,
+        brand,
+      });
+      await prisma.adProject.update({
+        where: { id: projectId },
+        data: {
+          status: "ready",
+          generationPhase: null,
+          kbVersionAtGen: getKbVersion(),
+          generationCostUsd: new Prisma.Decimal(slideshow.totalCostUsd.toFixed(4)),
+          lastError: null,
+        },
+      });
+      await logAiUsage(
+        project.restaurantId,
+        "ad_studio_project",
+        slideshow.tokensIn,
+        slideshow.tokensOut,
+        0
+      );
+      return;
+    }
 
     const result = await runAdStudioGeneration({
       brief,
