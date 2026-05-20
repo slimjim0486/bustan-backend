@@ -280,6 +280,7 @@ model User {
   assignedTickets SupportTicket[]        @relation("SupportTicketAssignee")
   supportMessages SupportTicketMessage[] @relation("SupportMessageAuthor")
   supportEvents   SupportTicketEvent[]   @relation("SupportEventActor")
+  coworkerOwners  CoworkerOwner[]
 
   @@map("users")
 }
@@ -308,6 +309,7 @@ model Restaurant {
   subscriptionStatus SubscriptionStatus @default(trial) @map("subscription_status")
   trialEndsAt        DateTime?          @map("trial_ends_at")
   sabtPackEnabled    Boolean            @default(true) @map("sabt_pack_enabled")
+  eventCalendarEnabled Boolean          @default(true) @map("event_calendar_enabled")
   ordersV1Enabled    Boolean            @default(false) @map("orders_v1_enabled")
   ownerId            String             @map("owner_user_id")
   operatorAccountId  String?            @map("operator_account_id")
@@ -352,6 +354,8 @@ model Restaurant {
   supportMessages           SupportTicketMessage[]
   supportEvents             SupportTicketEvent[]
   supportAttachments        SupportTicketAttachment[]
+  coworkerOwner             CoworkerOwner?
+  coworkerMessages          CoworkerMessage[]
 
   @@index([ownerId])
   @@index([operatorAccountId])
@@ -1337,6 +1341,14 @@ model AdProject {
   sabtPackDeliveredAt   DateTime?       @map("sabt_pack_delivered_at")
   sabtPackApprovedAt    DateTime?       @map("sabt_pack_approved_at")
   sabtPackThemeOfWeek   String?         @map("sabt_pack_theme_of_week") @db.Text
+  // Event calendar — when an AdProject is auto-staged from a MENA calendar
+  // moment (Ramadan, Eid, National Day, DSF…), the moment's id and year are
+  // stamped here. (restaurantId, sourceMomentId, sourceMomentYear) is unique
+  // so the daily cron is safe to re-run.
+  sourceMomentId        String?         @map("source_moment_id")
+  sourceMomentYear      Int?            @map("source_moment_year")
+  sourceMomentStartsOn  DateTime?       @map("source_moment_starts_on") @db.Date
+  sourceMomentStagedAt  DateTime?       @map("source_moment_staged_at")
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @updatedAt @map("updated_at")
 
@@ -1347,9 +1359,11 @@ model AdProject {
   attributedCustomers Customer[]       @relation("CustomerReferralProject")
 
   @@unique([restaurantId, sabtPackWeekStartDate], name: "uniq_sabt_pack_per_week")
+  @@unique([restaurantId, sourceMomentId, sourceMomentYear], name: "uniq_event_stage_per_moment")
   @@index([restaurantId, status, createdAt])
   @@index([restaurantId, createdAt])
   @@index([sabtPackStatus, sabtPackWeekStartDate])
+  @@index([sourceMomentId, sourceMomentYear])
   @@map("ad_projects")
 }
 
@@ -1774,4 +1788,145 @@ model SupportArticle {
 
   @@index([isPublished, category])
   @@map("support_articles")
+}
+
+// =============================================================================
+// COWORKER — Sous Chef delivered over WhatsApp on Bustan's own WABA.
+//
+// Architecturally separate from the per-restaurant WhatsAppIntegration (which
+// powers customer ordering, model WhatsAppIntegration above). Coworker uses a
+// single Bustan-owned WhatsApp number to talk *to the restaurant owner*. The
+// restaurant identity is resolved server-side from the owner's E.164 phone.
+// Templates are owned by Bustan and submitted once; they apply to every owner.
+//
+// Reuses the existing brain: OwnerWhisper (daily brief content), OWNER_TOOLS
+// + executeTool (agent loop), OwnerChatMessage (conversation persistence),
+// OwnerChatMemory (long-term context). Coworker is purely the delivery
+// surface plus a thin admin template-management layer.
+// =============================================================================
+
+enum CoworkerOwnerStatus {
+  pilot
+  active
+  paused
+  opted_out
+}
+
+enum CoworkerTemplateStatus {
+  draft
+  pending
+  approved
+  rejected
+  paused
+  disabled
+}
+
+enum CoworkerMessageDirection {
+  outbound
+  inbound
+}
+
+enum CoworkerMessageStatus {
+  queued
+  sent
+  delivered
+  read
+  failed
+  received
+}
+
+model CoworkerOwner {
+  id             String              @id @default(cuid())
+  restaurantId   String              @unique @map("restaurant_id")
+  ownerUserId    String              @map("owner_user_id")
+  /// E.164 with leading "+". Single source of truth — never re-normalize at use time.
+  ownerPhoneE164 String              @unique @map("owner_phone_e164")
+  locale         String              @default("en")
+  timezone       String              @default("Asia/Dubai")
+  /// HH:mm local. Daily Brief send time. Default 08:00 Asia/Dubai.
+  dailyBriefAt   String              @default("08:00") @map("daily_brief_at")
+  status         CoworkerOwnerStatus @default(pilot)
+  /// Last inbound message timestamp + 24h. Outside this, only template sends allowed.
+  windowExpiresAt DateTime?          @map("window_expires_at")
+  optedInAt      DateTime            @default(now()) @map("opted_in_at")
+  pausedAt       DateTime?           @map("paused_at")
+  optedOutAt     DateTime?           @map("opted_out_at")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+
+  restaurant Restaurant         @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  owner      User               @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  messages   CoworkerMessage[]
+
+  @@index([status, dailyBriefAt])
+  @@index([ownerUserId])
+  @@map("coworker_owners")
+}
+
+model CoworkerTemplate {
+  id              String                 @id @default(cuid())
+  /// Meta template name (snake_case). Unique per locale + version.
+  name            String
+  locale          String                 @default("en")
+  /// Meta category: UTILITY | MARKETING | AUTHENTICATION. v1 is UTILITY-only.
+  category        String                 @default("UTILITY")
+  status          CoworkerTemplateStatus @default(draft)
+  /// Body text with {{1}}, {{2}}, ... positional variables.
+  body            String                 @db.Text
+  /// Ordered example values for each variable (Meta requires examples).
+  variables       String[]               @default([])
+  /// Optional buttons component: [{type:"QUICK_REPLY", text:"..."}, ...].
+  buttons         Json?
+  /// Optional footer text.
+  footer          String?
+  /// Meta-side template id. Populated after submission.
+  metaTemplateId  String?                @map("meta_template_id")
+  rejectionReason String?                @map("rejection_reason") @db.Text
+  version         Int                    @default(1)
+  /// Set when a new version supersedes this one; prevents reuse.
+  supersededAt    DateTime?              @map("superseded_at")
+  lastSyncedAt    DateTime?              @map("last_synced_at")
+  createdAt       DateTime               @default(now()) @map("created_at")
+  updatedAt       DateTime               @updatedAt @map("updated_at")
+
+  @@unique([name, locale, version])
+  @@index([status, name])
+  @@map("coworker_templates")
+}
+
+model CoworkerMessage {
+  id               String                   @id @default(cuid())
+  coworkerOwnerId  String                   @map("coworker_owner_id")
+  restaurantId     String                   @map("restaurant_id")
+  direction        CoworkerMessageDirection
+  status           CoworkerMessageStatus    @default(queued)
+  /// For outbound: template name (null for free-form replies inside 24h window).
+  templateName     String?                  @map("template_name")
+  /// Rendered body or inbound text. Free-form replies persist verbatim; templates persist the rendered preview.
+  body             String                   @db.Text
+  /// Meta-side message id; used for status webhooks.
+  providerMessageId String?                 @unique @map("provider_message_id")
+  /// Inbound button payload (for quick-reply taps).
+  buttonPayload    String?                  @map("button_payload")
+  /// USD cost from Meta pricing (utility templates only). Null for free-form replies (free inside window).
+  costUsd          Decimal?                 @map("cost_usd") @db.Decimal(10, 6)
+  /// Idempotency key for dedupe of scheduled sends (e.g. "daily-brief:{restaurantId}:{yyyy-mm-dd}").
+  idempotencyKey   String?                  @unique @map("idempotency_key")
+  errorCode        String?                  @map("error_code")
+  errorMessage     String?                  @map("error_message") @db.Text
+  /// True if this was a dry-run that was logged but not actually sent to Meta.
+  dryRun           Boolean                  @default(false) @map("dry_run")
+  sentAt           DateTime?                @map("sent_at")
+  deliveredAt      DateTime?                @map("delivered_at")
+  readAt           DateTime?                @map("read_at")
+  failedAt         DateTime?                @map("failed_at")
+  createdAt        DateTime                 @default(now()) @map("created_at")
+
+  coworkerOwner CoworkerOwner @relation(fields: [coworkerOwnerId], references: [id], onDelete: Cascade)
+  restaurant    Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([coworkerOwnerId, createdAt])
+  @@index([restaurantId, direction, createdAt])
+  @@index([status, createdAt])
+  @@map("coworker_messages")
 }

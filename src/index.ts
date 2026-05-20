@@ -20,6 +20,8 @@ import { startOwnerChatMemoryWorker } from "@/queue/owner-chat-memory";
 import { startOwnerWhisperWorker } from "@/queue/owner-whisper";
 import { startGscSyncWorker } from "@/queue/gsc-sync";
 import { startSabtPackWorker } from "@/queue/sabt-pack";
+import { startEventStagerWorker } from "@/queue/event-stager";
+import { startCoworkerDailyBriefWorker } from "@/queue/coworker-daily-brief";
 import { adStudioRoute, adStudioPublicRoute } from "@/routes/ad-studio";
 import { sabtPackRoute, sabtPackAdminRoute } from "@/routes/sabt-pack";
 import { adminRoute } from "@/routes/admin";
@@ -50,6 +52,9 @@ import { whatsappWebhooksRoute } from "@/routes/whatsapp-webhooks";
 import { ordersRoute, ordersAdminRoute } from "@/routes/orders";
 import { metaDataDeletionRoute } from "@/routes/meta-data-deletion";
 import { clerkWebhooksRoute } from "@/routes/clerk-webhooks";
+import { coworkerRoute } from "@/routes/coworker";
+import { coworkerAdminRoute } from "@/routes/coworker-admin";
+import { coworkerWebhooksRoute } from "@/routes/coworker-webhooks";
 
 initSentry();
 
@@ -100,6 +105,9 @@ app.route("/api/ad-studio-public", adStudioPublicRoute);
 app.route("/api/ad-studio", adStudioRoute);
 app.route("/api/sabt-pack", sabtPackRoute);
 app.route("/api/admin/sabt-pack", sabtPackAdminRoute);
+app.route("/api/coworker", coworkerRoute);
+app.route("/api/admin/coworker", coworkerAdminRoute);
+app.route("/api/webhooks", coworkerWebhooksRoute);
 
 serve(
   {
@@ -182,4 +190,20 @@ startSabtPackWorker()
   })
   .catch((error) => {
     console.error("pg-boss sabt-pack worker failed to start", error);
+  });
+
+startEventStagerWorker()
+  .then(() => {
+    console.log("pg-boss event-stager worker started");
+  })
+  .catch((error) => {
+    console.error("pg-boss event-stager worker failed to start", error);
+  });
+
+startCoworkerDailyBriefWorker()
+  .then(() => {
+    console.log("pg-boss coworker-daily-brief worker started");
+  })
+  .catch((error) => {
+    console.error("pg-boss coworker-daily-brief worker failed to start", error);
   });

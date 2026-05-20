@@ -28,6 +28,7 @@ import {
 } from "@/services/ad-studio-ai";
 import { randomBytes } from "node:crypto";
 import { enqueueAdStudioGeneration, enqueueRegenImage } from "@/queue/ad-studio-jobs";
+import { runEventStagerForRestaurantNow } from "@/queue/event-stager";
 import { buildAndUploadBundle } from "@/services/ad-studio-ai/export-bundle";
 import { buildMetaExport } from "@/services/ad-studio-meta-export";
 import {
@@ -156,6 +157,10 @@ adStudioRoute.get("/kb/calendar", async (c) => {
       countries: m.countries,
       spendPulse: m.spendPulse,
       creativeAngles: m.creativeAngles,
+      doList: m.doList,
+      doNotList: m.doNotList,
+      channelMixHint: m.channelMixHint ?? null,
+      budgetMultiplierVsBaseline: m.budgetMultiplierVsBaseline ?? null,
     })),
   });
 });
@@ -164,6 +169,95 @@ adStudioRoute.get("/kb/recommend-platforms", async (c) => {
   const countries = (c.req.query("countries") ?? "").split(",").filter(Boolean) as CountryCode[];
   if (!countries.length) return c.json({ platforms: [] });
   return c.json({ platforms: getRecommendedPlatformsForCountries(countries) });
+});
+
+// =============================================================================
+// Event calendar — staged drafts + autopilot trigger
+// =============================================================================
+
+/** List drafts that the daily event-stager cron auto-created for this restaurant.
+ *  The calendar page joins these against moments to surface a "Draft ready"
+ *  chip next to each matching moment card. */
+adStudioRoute.get("/event-stager/drafts", async (c) => {
+  try {
+    const auth = c.var.auth;
+    const restaurantId = c.req.query("restaurantId");
+    if (!restaurantId) throw new ApiError("restaurantId is required", 400);
+    const restaurant = await loadRestaurantForUser(restaurantId, auth.clerkId);
+    ensureAdStudioEnabled(restaurant);
+
+    // Show drafts whose moment hasn't fully ended yet — once the moment is
+    // over the draft is historical and the calendar won't list its source row.
+    const drafts = await prisma.adProject.findMany({
+      where: {
+        restaurantId: restaurant.id,
+        sourceMomentId: { not: null },
+      },
+      orderBy: { sourceMomentStartsOn: "asc" },
+      select: {
+        id: true,
+        status: true,
+        sourceMomentId: true,
+        sourceMomentYear: true,
+        sourceMomentStartsOn: true,
+        sourceMomentStagedAt: true,
+        name: true,
+      },
+      take: 100,
+    });
+
+    return c.json({ drafts });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
+/** Manual trigger — owner can force a stage-now pass without waiting for the
+ *  04:00 UTC cron. Mirrors sabt-pack's admin trigger. Idempotent thanks to the
+ *  unique key on (restaurant_id, source_moment_id, source_moment_year). */
+adStudioRoute.post("/event-stager/run", async (c) => {
+  try {
+    const auth = c.var.auth;
+    const body = await c.req.json().catch(() => ({}));
+    const restaurantId = typeof body.restaurantId === "string" ? body.restaurantId : null;
+    if (!restaurantId) throw new ApiError("restaurantId is required", 400);
+    const restaurant = await loadRestaurantForUser(restaurantId, auth.clerkId);
+    ensureAdStudioEnabled(restaurant);
+
+    // Run inline so the owner sees results in the same request — for ~10
+    // moments per restaurant this is well under any reasonable timeout.
+    await runEventStagerForRestaurantNow(restaurant.id);
+
+    return c.json({ ok: true });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
+/** Toggle the per-restaurant master switch. Default true on signup, so most
+ *  owners never touch this — it exists for the rare operator who wants to
+ *  drive briefs entirely manually. */
+adStudioRoute.patch("/event-stager/settings", async (c) => {
+  try {
+    const auth = c.var.auth;
+    const body = await c.req.json().catch(() => ({}));
+    const restaurantId = typeof body.restaurantId === "string" ? body.restaurantId : null;
+    const enabled = typeof body.enabled === "boolean" ? body.enabled : null;
+    if (!restaurantId || enabled === null) {
+      throw new ApiError("restaurantId and enabled (boolean) are required", 400);
+    }
+    const restaurant = await loadRestaurantForUser(restaurantId, auth.clerkId);
+    ensureAdStudioEnabled(restaurant);
+
+    await prisma.restaurant.update({
+      where: { id: restaurant.id },
+      data: { eventCalendarEnabled: enabled },
+    });
+
+    return c.json({ ok: true, eventCalendarEnabled: enabled });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
 });
 
 // =============================================================================
