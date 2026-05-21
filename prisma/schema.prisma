@@ -286,35 +286,35 @@ model User {
 }
 
 model Restaurant {
-  id                 String             @id @default(cuid())
-  slug               String             @unique
-  name               String
-  description        String?
-  cuisineType        String?            @map("cuisine_type")
-  themeKey           String?            @map("theme_key")
-  location           String?
-  address            String?
-  phone              String?
-  website            String?
-  whatsappNumber     String?            @map("whatsapp_number")
-  whatsappPrefill    String?            @map("whatsapp_prefill")
-  deliverooUrl       String?            @map("deliveroo_url")
-  talabatUrl         String?            @map("talabat_url")
-  uberEatsUrl        String?            @map("uber_eats_url")
-  operatingHours     Json?              @map("operating_hours")
-  logoUrl            String?            @map("logo_url")
-  coverImageUrl      String?            @map("cover_image_url")
-  isPublished        Boolean            @default(false) @map("is_published")
-  isDemo             Boolean            @default(false) @map("is_demo")
-  subscriptionStatus SubscriptionStatus @default(trial) @map("subscription_status")
-  trialEndsAt        DateTime?          @map("trial_ends_at")
-  sabtPackEnabled    Boolean            @default(true) @map("sabt_pack_enabled")
-  eventCalendarEnabled Boolean          @default(true) @map("event_calendar_enabled")
-  ordersV1Enabled    Boolean            @default(false) @map("orders_v1_enabled")
-  ownerId            String             @map("owner_user_id")
-  operatorAccountId  String?            @map("operator_account_id")
-  createdAt          DateTime           @default(now()) @map("created_at")
-  updatedAt          DateTime           @updatedAt @map("updated_at")
+  id                   String             @id @default(cuid())
+  slug                 String             @unique
+  name                 String
+  description          String?
+  cuisineType          String?            @map("cuisine_type")
+  themeKey             String?            @map("theme_key")
+  location             String?
+  address              String?
+  phone                String?
+  website              String?
+  whatsappNumber       String?            @map("whatsapp_number")
+  whatsappPrefill      String?            @map("whatsapp_prefill")
+  deliverooUrl         String?            @map("deliveroo_url")
+  talabatUrl           String?            @map("talabat_url")
+  uberEatsUrl          String?            @map("uber_eats_url")
+  operatingHours       Json?              @map("operating_hours")
+  logoUrl              String?            @map("logo_url")
+  coverImageUrl        String?            @map("cover_image_url")
+  isPublished          Boolean            @default(false) @map("is_published")
+  isDemo               Boolean            @default(false) @map("is_demo")
+  subscriptionStatus   SubscriptionStatus @default(trial) @map("subscription_status")
+  trialEndsAt          DateTime?          @map("trial_ends_at")
+  sabtPackEnabled      Boolean            @default(true) @map("sabt_pack_enabled")
+  eventCalendarEnabled Boolean            @default(true) @map("event_calendar_enabled")
+  ordersV1Enabled      Boolean            @default(false) @map("orders_v1_enabled")
+  ownerId              String             @map("owner_user_id")
+  operatorAccountId    String?            @map("operator_account_id")
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
 
   owner                     User                         @relation(fields: [ownerId], references: [id])
   operatorAccount           OperatorAccount?             @relation(fields: [operatorAccountId], references: [id], onDelete: SetNull)
@@ -356,6 +356,8 @@ model Restaurant {
   supportAttachments        SupportTicketAttachment[]
   coworkerOwner             CoworkerOwner?
   coworkerMessages          CoworkerMessage[]
+  draftActions              DraftAction[]
+  gbpReviews                GbpReview[]
 
   @@index([ownerId])
   @@index([operatorAccountId])
@@ -894,30 +896,30 @@ model MessageLog {
 }
 
 model WhatsAppIntegration {
-  id                 String                    @id @default(cuid())
-  restaurantId       String                    @unique @map("restaurant_id")
-  status             WhatsAppIntegrationStatus @default(pending)
-  wabaId             String?                   @map("waba_id")
-  businessAccountId  String?                   @map("business_account_id")
+  id                      String                    @id @default(cuid())
+  restaurantId            String                    @unique @map("restaurant_id")
+  status                  WhatsAppIntegrationStatus @default(pending)
+  wabaId                  String?                   @map("waba_id")
+  businessAccountId       String?                   @map("business_account_id")
   /**
    * Meta `user_id` from the OAuth `signed_request` — used to honour data deletion / deauthorize callbacks.
    */
-  metaUserId         String?                   @map("meta_user_id")
-  phoneNumberId      String                    @unique @map("phone_number_id")
-  displayPhoneNumber String                    @map("display_phone_number")
-  accessTokenCipher  String                    @map("access_token_cipher") @db.Text
-  tokenLastFour      String?                   @map("token_last_four")
-  connectedAt        DateTime?                 @map("connected_at")
-  lastWebhookAt      DateTime?                 @map("last_webhook_at")
-  lastTemplateSyncAt DateTime?                 @map("last_template_sync_at")
+  metaUserId              String?                   @map("meta_user_id")
+  phoneNumberId           String                    @unique @map("phone_number_id")
+  displayPhoneNumber      String                    @map("display_phone_number")
+  accessTokenCipher       String                    @map("access_token_cipher") @db.Text
+  tokenLastFour           String?                   @map("token_last_four")
+  connectedAt             DateTime?                 @map("connected_at")
+  lastWebhookAt           DateTime?                 @map("last_webhook_at")
+  lastTemplateSyncAt      DateTime?                 @map("last_template_sync_at")
   /// C2: stamped when the webhook receives an explicit "CONFIRM" message
   /// from restaurant.whatsappNumber. Until non-null, the order webhook
   /// router ignores Accept/Reject button-taps from that number — defends
   /// against a stranger whose phone an owner mistyped acting as operator.
-  operatorPhoneVerifiedAt DateTime?            @map("operator_phone_verified_at")
-  lastError          String?                   @map("last_error") @db.Text
-  createdAt          DateTime                  @default(now()) @map("created_at")
-  updatedAt          DateTime                  @updatedAt @map("updated_at")
+  operatorPhoneVerifiedAt DateTime?                 @map("operator_phone_verified_at")
+  lastError               String?                   @map("last_error") @db.Text
+  createdAt               DateTime                  @default(now()) @map("created_at")
+  updatedAt               DateTime                  @updatedAt @map("updated_at")
 
   restaurant    Restaurant                   @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   templates     WhatsAppTemplate[]
@@ -1836,26 +1838,26 @@ enum CoworkerMessageStatus {
 }
 
 model CoworkerOwner {
-  id             String              @id @default(cuid())
-  restaurantId   String              @unique @map("restaurant_id")
-  ownerUserId    String              @map("owner_user_id")
+  id              String              @id @default(cuid())
+  restaurantId    String              @unique @map("restaurant_id")
+  ownerUserId     String              @map("owner_user_id")
   /// E.164 with leading "+". Single source of truth — never re-normalize at use time.
-  ownerPhoneE164 String              @unique @map("owner_phone_e164")
-  locale         String              @default("en")
-  timezone       String              @default("Asia/Dubai")
+  ownerPhoneE164  String              @unique @map("owner_phone_e164")
+  locale          String              @default("en")
+  timezone        String              @default("Asia/Dubai")
   /// HH:mm local. Daily Brief send time. Default 08:00 Asia/Dubai.
-  dailyBriefAt   String              @default("08:00") @map("daily_brief_at")
-  status         CoworkerOwnerStatus @default(pilot)
+  dailyBriefAt    String              @default("08:00") @map("daily_brief_at")
+  status          CoworkerOwnerStatus @default(pilot)
   /// Last inbound message timestamp + 24h. Outside this, only template sends allowed.
-  windowExpiresAt DateTime?          @map("window_expires_at")
-  optedInAt      DateTime            @default(now()) @map("opted_in_at")
-  pausedAt       DateTime?           @map("paused_at")
-  optedOutAt     DateTime?           @map("opted_out_at")
-  createdAt      DateTime            @default(now()) @map("created_at")
-  updatedAt      DateTime            @updatedAt @map("updated_at")
+  windowExpiresAt DateTime?           @map("window_expires_at")
+  optedInAt       DateTime            @default(now()) @map("opted_in_at")
+  pausedAt        DateTime?           @map("paused_at")
+  optedOutAt      DateTime?           @map("opted_out_at")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
 
-  restaurant Restaurant         @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  owner      User               @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  restaurant Restaurant        @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  owner      User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   messages   CoworkerMessage[]
 
   @@index([status, dailyBriefAt])
@@ -1895,32 +1897,32 @@ model CoworkerTemplate {
 }
 
 model CoworkerMessage {
-  id               String                   @id @default(cuid())
-  coworkerOwnerId  String                   @map("coworker_owner_id")
-  restaurantId     String                   @map("restaurant_id")
-  direction        CoworkerMessageDirection
-  status           CoworkerMessageStatus    @default(queued)
+  id                String                   @id @default(cuid())
+  coworkerOwnerId   String                   @map("coworker_owner_id")
+  restaurantId      String                   @map("restaurant_id")
+  direction         CoworkerMessageDirection
+  status            CoworkerMessageStatus    @default(queued)
   /// For outbound: template name (null for free-form replies inside 24h window).
-  templateName     String?                  @map("template_name")
+  templateName      String?                  @map("template_name")
   /// Rendered body or inbound text. Free-form replies persist verbatim; templates persist the rendered preview.
-  body             String                   @db.Text
+  body              String                   @db.Text
   /// Meta-side message id; used for status webhooks.
-  providerMessageId String?                 @unique @map("provider_message_id")
+  providerMessageId String?                  @unique @map("provider_message_id")
   /// Inbound button payload (for quick-reply taps).
-  buttonPayload    String?                  @map("button_payload")
+  buttonPayload     String?                  @map("button_payload")
   /// USD cost from Meta pricing (utility templates only). Null for free-form replies (free inside window).
-  costUsd          Decimal?                 @map("cost_usd") @db.Decimal(10, 6)
+  costUsd           Decimal?                 @map("cost_usd") @db.Decimal(10, 6)
   /// Idempotency key for dedupe of scheduled sends (e.g. "daily-brief:{restaurantId}:{yyyy-mm-dd}").
-  idempotencyKey   String?                  @unique @map("idempotency_key")
-  errorCode        String?                  @map("error_code")
-  errorMessage     String?                  @map("error_message") @db.Text
+  idempotencyKey    String?                  @unique @map("idempotency_key")
+  errorCode         String?                  @map("error_code")
+  errorMessage      String?                  @map("error_message") @db.Text
   /// True if this was a dry-run that was logged but not actually sent to Meta.
-  dryRun           Boolean                  @default(false) @map("dry_run")
-  sentAt           DateTime?                @map("sent_at")
-  deliveredAt      DateTime?                @map("delivered_at")
-  readAt           DateTime?                @map("read_at")
-  failedAt         DateTime?                @map("failed_at")
-  createdAt        DateTime                 @default(now()) @map("created_at")
+  dryRun            Boolean                  @default(false) @map("dry_run")
+  sentAt            DateTime?                @map("sent_at")
+  deliveredAt       DateTime?                @map("delivered_at")
+  readAt            DateTime?                @map("read_at")
+  failedAt          DateTime?                @map("failed_at")
+  createdAt         DateTime                 @default(now()) @map("created_at")
 
   coworkerOwner CoworkerOwner @relation(fields: [coworkerOwnerId], references: [id], onDelete: Cascade)
   restaurant    Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
@@ -1929,4 +1931,158 @@ model CoworkerMessage {
   @@index([restaurantId, direction, createdAt])
   @@index([status, createdAt])
   @@map("coworker_messages")
+}
+
+// =============================================================================
+// Sous Chef — Draft Action Inbox
+// =============================================================================
+//
+// Persistent home for every action Sous Chef drafts on behalf of the owner.
+// Owner-facing inbox UI renders these; chat tools write here (replacing the
+// in-memory PendingAction store); existing crons (event-stager, sabt-pack,
+// gsc-sync) also write here so all pending work lands in one place.
+//
+// Trust model: draft-only. Approve enqueues a worker job that ships after a
+// 60s grace window so the owner can Undo from the Scheduled section.
+
+enum DraftActionKind {
+  single
+  bulk
+  bundle
+}
+
+enum DraftActionStatus {
+  pending
+  approved
+  scheduled
+  shipped
+  rejected
+  expired
+  failed
+}
+
+enum DraftActionSource {
+  chat
+  quick_prompt
+  event_stager
+  sabt_pack
+  gsc_sync
+  page_macro
+}
+
+model DraftAction {
+  id            String  @id @default(cuid())
+  restaurantId  String  @map("restaurant_id")
+  ownerUserId   String  @map("owner_user_id")
+  parentDraftId String? @map("parent_draft_id")
+
+  kind       DraftActionKind   @default(single)
+  /// Identifier of the underlying mutation, e.g. "menu_description", "price_change", "promotion_create", "review_reply"
+  actionType String            @map("action_type")
+  source     DraftActionSource
+  status     DraftActionStatus @default(pending)
+
+  title           String
+  subtitle        String?
+  iconKey         String? @map("icon_key")
+  /// Route the draft is associated with, used by inline banners (e.g. "/dashboard/menu").
+  affectedSurface String? @map("affected_surface")
+
+  /// Executable payload — matches the shape of the owning tool's input schema.
+  payload         Json
+  /// Human-readable preview rendered in the card (text, diff, segment counts, etc.).
+  preview         Json
+  /// For kind='bulk': number of items in payload.items. For kind='bundle': number of children.
+  childCount      Int   @default(0) @map("child_count")
+  /// Optional impact estimate: { reach, spend, revenueDelta, ... }.
+  estimatedImpact Json? @map("estimated_impact")
+
+  decisionAt      DateTime? @map("decision_at")
+  decidedBy       String?   @map("decided_by")
+  rejectionReason String?   @map("rejection_reason")
+
+  /// When the worker should attempt to ship. Default: now() + 60s grace on approve.
+  shipAt     DateTime? @map("ship_at")
+  shippedAt  DateTime? @map("shipped_at")
+  shipResult Json?     @map("ship_result")
+  shipError  String?   @map("ship_error")
+
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  /// Optional links so shipDraft can mutate the right entity directly.
+  adProjectId String? @map("ad_project_id")
+  campaignId  String? @map("campaign_id")
+  menuItemId  String? @map("menu_item_id")
+
+  restaurant  Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  parentDraft DraftAction?  @relation("BundleChildren", fields: [parentDraftId], references: [id], onDelete: Cascade)
+  children    DraftAction[] @relation("BundleChildren")
+
+  @@index([restaurantId, status, createdAt(sort: Desc)])
+  @@index([restaurantId, source])
+  @@index([parentDraftId])
+  @@index([shipAt])
+  @@map("draft_actions")
+}
+
+// =============================================================================
+// Google Business Profile reviews — Phase 3
+// =============================================================================
+//
+// Stores individual reviews pulled via Apify (compass/google-maps-reviews-
+// scraper). Per-review text + reply state. Bustan does NOT post replies back
+// to Google (would need GBP API OAuth which isn't wired). Instead, Sous Chef
+// drafts replies into draftReply and the inbox card offers a Copy button so
+// the owner pastes into their own GBP. When GBP OAuth lands later, the
+// `posted` transition becomes auto-triggered by a shipper.
+
+enum GbpReviewSource {
+  google
+  talabat
+  zomato
+  tripadvisor
+}
+
+enum GbpReviewStatus {
+  unanswered // pulled from Apify, never drafted
+  draft_pending // Sous Chef has produced a draft awaiting owner decision
+  draft_approved // owner approved the draft, copy-paste affordance now active
+  posted // owner manually confirmed they pasted the reply on Google
+  ignored // owner dismissed; no reply will be drafted again
+  has_owner_reply // Apify reports the owner already replied — skip for drafting
+}
+
+model GbpReview {
+  id               String          @id @default(cuid())
+  restaurantId     String          @map("restaurant_id")
+  source           GbpReviewSource @default(google)
+  /// Stable external review id from the scraper. Used to dedupe re-pulls.
+  externalId       String          @map("external_id")
+  reviewerName     String          @map("reviewer_name")
+  reviewerPhotoUrl String?         @map("reviewer_photo_url")
+  rating           Int
+  text             String          @db.Text
+  publishedAt      DateTime?       @map("published_at")
+  language         String?
+  /// Apify-reported owner reply if one already exists on Google. Lets us
+  /// skip drafting for already-answered reviews.
+  ownerResponse    String?         @map("owner_response") @db.Text
+
+  status     GbpReviewStatus @default(unanswered)
+  draftReply String?         @map("draft_reply") @db.Text
+  draftedAt  DateTime?       @map("drafted_at")
+  approvedAt DateTime?       @map("approved_at")
+  postedAt   DateTime?       @map("posted_at")
+  ignoredAt  DateTime?       @map("ignored_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, externalId])
+  @@index([restaurantId, status, publishedAt(sort: Desc)])
+  @@index([restaurantId, rating])
+  @@map("gbp_reviews")
 }

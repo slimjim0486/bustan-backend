@@ -626,6 +626,13 @@ export const ownerChatRoute = new Hono<{
                   emit("preview", result.preview);
                 }
 
+                // Sous Chef Inbox: a draftId means the action was persisted as
+                // a card and the chat client should render a "view in Inbox" pill
+                // instead of the old inline approve/reject buttons.
+                if (result.draftId) {
+                  emit("draft", { draftId: result.draftId, tool: block.name });
+                }
+
                 toolResults.push({
                   type: "tool_result" as const,
                   tool_use_id: block.id,

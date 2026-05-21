@@ -14,7 +14,8 @@ export type AiFeature =
   | "ad_studio_project"
   | "sous_chef_message"
   | "ad_studio_image"
-  | "ad_studio_image_openai";
+  | "ad_studio_image_openai"
+  | "review_reply_draft";
 
 const TOKEN_PRICING_USD = {
   haiku: {

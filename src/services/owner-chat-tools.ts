@@ -10,6 +10,10 @@ import {
   createPendingAction,
   consumePendingAction,
 } from "@/lib/pending-actions";
+import { createDraft, type CreateDraftParams } from "@/services/draft-actions";
+import { DraftActionKind, DraftActionSource } from "@prisma/client";
+import { pullGoogleReviews, listUnansweredReviews } from "@/services/reviews/pull-reviews";
+import { draftReplies } from "@/services/reviews/reply-drafter";
 import { checkAiLimit, getAiUsageSummary, logAiUsage } from "@/lib/ai-usage";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
@@ -34,6 +38,13 @@ export interface ToolResult {
       after: string;
     }>;
   };
+  /**
+   * Sous Chef Inbox draft id. When present, the chat client should render a
+   * compact "Drafted — view in Inbox" pill instead of inline approve/reject
+   * buttons; ownership of the decision moves from the chat bubble to the
+   * persistent inbox card.
+   */
+  draftId?: string;
 }
 
 // ── Tool Definitions ───────────────────────────────────────────
@@ -579,6 +590,50 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
     },
   },
 
+  // ── REVIEWS ──────────────────────────────────────────────────
+  {
+    name: "draft_review_replies",
+    description:
+      "Pull recent Google reviews and draft an owner-voiced reply for each one that hasn't been answered. Tone-aware (warm for 5-stars, deferential for 1-2 stars) and language-aware (replies in the review's language). Returns a bulk inbox card with all drafts — the owner copies each reply and pastes it into their Google Business Profile (Bustan can't post replies for you yet). Use when the owner asks 'reply to my reviews', 'draft Google replies', 'help with bad reviews'. Skips reviews you've already replied to.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        force_refresh: {
+          type: "boolean",
+          description:
+            "If true, pull fresh reviews from Apify even within the 6h refresh throttle. Use sparingly — costs ~$0.50 per pull.",
+        },
+        limit: {
+          type: "number",
+          description:
+            "Max reviews to draft replies for in this batch. Default 8, max 15. Larger batches risk Claude truncation.",
+        },
+      },
+      required: [],
+    },
+  },
+
+  // ── MACRO TOOLS ──────────────────────────────────────────────
+  // High-leverage "plan this for me" macros that bundle several drafts into
+  // one parent DraftAction. The owner approves the bundle and every child
+  // ships atomically at the same shipAt.
+  {
+    name: "plan_marketing_week",
+    description:
+      "Plan a coordinated marketing bundle for the next 7 days. Reads upcoming event-calendar moments, recent menu performance, and customer segments. Drafts a parent 'marketing_bundle' with child drafts for an ad campaign (if a moment is in the prep window), a WhatsApp blast (if there are lapsed regulars), and a featured promotion. Owner reviews the bundle and Ships All — every child fires at the same time. Use when the owner asks 'plan my week', 'set up weekend marketing', or anything about coordinated multi-channel campaigns.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        theme_hint: {
+          type: "string",
+          description:
+            "Optional theme the owner wants to anchor the week on (e.g. 'biryani heroes', 'weekend brunch'). If omitted, we infer from upcoming events + top menu items.",
+        },
+      },
+      required: [],
+    },
+  },
+
   // ── BUSTAN PLATFORM KB ────────────────────────────────────────
   {
     name: "get_bustan_info",
@@ -763,6 +818,14 @@ export async function executeTool(
       // Bustan platform KB
       case "get_bustan_info":
         return execGetBustanInfo(input);
+
+      // Reviews
+      case "draft_review_replies":
+        return await execDraftReviewReplies(restaurantId, clerkId, input);
+
+      // Macro tools — produce bundles
+      case "plan_marketing_week":
+        return await execPlanMarketingWeek(restaurantId, clerkId, input);
 
       default:
         return { content: JSON.stringify({ error: `Unknown tool: ${toolName}` }) };
@@ -1512,12 +1575,33 @@ async function execEnhanceDescriptions(
       { suggestion: result.description, itemId: item.id }
     );
 
+    const draft = await createDraft(restaurantId, clerkId, {
+      actionType: "menu_description",
+      source: DraftActionSource.chat,
+      title: `${item.description ? "Refresh" : "Add"} description for "${item.name}"`,
+      subtitle: item.description
+        ? "Rewriting an existing description"
+        : "Missing description hurts SEO + ordering",
+      iconKey: "menu",
+      affectedSurface: "/dashboard/menu",
+      payload: { menuItemId: item.id, description: result.description },
+      preview: {
+        itemName: item.name,
+        sectionName: item.section.name,
+        before: item.description,
+        after: result.description,
+      },
+      menuItemId: item.id,
+    });
+
     return {
       content: JSON.stringify({
         preview: true,
         item: item.name,
         currentDescription: item.description,
         suggestedDescription: result.description,
+        draftId: draft.id,
+        inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
       }),
       preview: {
         pendingActionId,
@@ -1530,6 +1614,7 @@ async function execEnhanceDescriptions(
           },
         ],
       },
+      draftId: draft.id,
     };
   }
 
@@ -1584,6 +1669,29 @@ async function execEnhanceDescriptions(
     { suggestions: result.suggestions }
   );
 
+  const draft = await createDraft(restaurantId, clerkId, {
+    kind: DraftActionKind.bulk,
+    actionType: "menu_descriptions_bulk",
+    source: DraftActionSource.chat,
+    title: `Enhance descriptions for ${count} item${count === 1 ? "" : "s"}`,
+    subtitle: Object.keys(result.suggestions)
+      .slice(0, 3)
+      .map((id) => itemMap.get(id)?.name ?? id)
+      .join(", ") +
+      (count > 3 ? `, +${count - 3} more` : ""),
+    iconKey: "menu",
+    affectedSurface: "/dashboard/menu",
+    childCount: count,
+    payload: { suggestions: result.suggestions },
+    preview: {
+      items: Object.entries(result.suggestions).map(([id, desc]) => ({
+        name: itemMap.get(id)?.name ?? id,
+        before: itemMap.get(id)?.description ?? null,
+        after: desc,
+      })),
+    },
+  });
+
   return {
     content: JSON.stringify({
       preview: true,
@@ -1593,6 +1701,8 @@ async function execEnhanceDescriptions(
         current: itemMap.get(id)?.description ?? null,
         suggested: desc,
       })),
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
     }),
     preview: {
       pendingActionId,
@@ -1603,6 +1713,7 @@ async function execEnhanceDescriptions(
         after: desc,
       })),
     },
+    draftId: draft.id,
   };
 }
 
@@ -1739,6 +1850,32 @@ async function execSuggestDietaryTags(
     { suggestions: previewSuggestions }
   );
 
+  const draft = await createDraft(restaurantId, clerkId, {
+    kind: DraftActionKind.bulk,
+    actionType: "dietary_tags_apply",
+    source: DraftActionSource.chat,
+    title: `Apply ${totalTags} dietary tags to ${previewSuggestions.length} items`,
+    subtitle: previewSuggestions.slice(0, 3).map((s) => s.itemName).join(", ") +
+      (previewSuggestions.length > 3 ? `, +${previewSuggestions.length - 3} more` : ""),
+    iconKey: "menu",
+    affectedSurface: "/dashboard/menu",
+    childCount: previewSuggestions.length,
+    payload: {
+      suggestions: previewSuggestions.map((s) => ({
+        menuItemId: s.menuItemId,
+        tagIds: s.tags.map((t) => t.tagId),
+      })),
+    },
+    preview: {
+      totalItems: previewSuggestions.length,
+      totalTags,
+      items: previewSuggestions.map((s) => ({
+        name: s.itemName,
+        tags: s.tags.map((t) => ({ label: t.label, confidence: t.confidence })),
+      })),
+    },
+  });
+
   return {
     content: JSON.stringify({
       preview: true,
@@ -1748,6 +1885,8 @@ async function execSuggestDietaryTags(
         item: s.itemName,
         tags: s.tags.map((t) => `${t.label} (${Math.round(t.confidence * 100)}%)`),
       })),
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
     }),
     preview: {
       pendingActionId,
@@ -1758,6 +1897,7 @@ async function execSuggestDietaryTags(
         after: s.tags.map((t) => t.label).join(", "),
       })),
     },
+    draftId: draft.id,
   };
 }
 
@@ -1826,18 +1966,51 @@ async function execUpdateMenuItem(
 
   const pendingActionId = createPendingAction(restaurantId, clerkId, "update_menu_item", input, null);
 
+  const onlyPrice =
+    input.price !== undefined &&
+    input.name === undefined &&
+    input.description === undefined &&
+    input.is_available === undefined;
+
+  const draft = await createDraft(restaurantId, clerkId, {
+    actionType: onlyPrice ? "price_change" : "menu_item_update",
+    source: DraftActionSource.chat,
+    title: onlyPrice
+      ? `Change "${item.name}" price · ${formatPrice(item.price)} → ${formatPrice(Number(input.price))}`
+      : `Update "${item.name}"`,
+    subtitle: changes.map((c) => c.label).join(" · "),
+    iconKey: onlyPrice ? "price" : "menu",
+    affectedSurface: "/dashboard/menu",
+    payload: {
+      menuItemId: itemId,
+      ...(input.name !== undefined && { name: String(input.name) }),
+      ...(input.description !== undefined && { description: String(input.description) }),
+      ...(input.price !== undefined && { price: Number(input.price) }),
+      ...(input.is_available !== undefined && { isAvailable: Boolean(input.is_available) }),
+    },
+    preview: {
+      itemName: item.name,
+      sectionName: item.section.name,
+      changes: changes.map((c) => ({ field: c.label, from: c.before, to: c.after })),
+    },
+    menuItemId: itemId,
+  });
+
   return {
     content: JSON.stringify({
       preview: true,
       item: item.name,
       section: item.section.name,
       changes: changes.map((c) => ({ field: c.label, from: c.before, to: c.after })),
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
     }),
     preview: {
       pendingActionId,
       description: `Update "${item.name}"`,
       changes,
     },
+    draftId: draft.id,
   };
 }
 
@@ -1910,17 +2083,50 @@ async function execUpdateMenuItemsBulk(
 
   const pendingActionId = createPendingAction(restaurantId, clerkId, "update_menu_items_bulk", input, null);
 
+  const draftItems = updates
+    .map((u) => {
+      const item = itemMap.get(String(u.menu_item_id));
+      if (!item) return null;
+      return {
+        menuItemId: item.id,
+        ...(u.name !== undefined && { name: String(u.name) }),
+        ...(u.description !== undefined && { description: String(u.description) }),
+        ...(u.price !== undefined && { price: Number(u.price) }),
+        ...(u.is_available !== undefined && { isAvailable: Boolean(u.is_available) }),
+      };
+    })
+    .filter((i): i is NonNullable<typeof i> => i !== null);
+
+  const draft = await createDraft(restaurantId, clerkId, {
+    kind: DraftActionKind.bulk,
+    actionType: "menu_items_bulk_update",
+    source: DraftActionSource.chat,
+    title: `Batch update ${draftItems.length} item${draftItems.length === 1 ? "" : "s"}`,
+    subtitle: changes.slice(0, 3).map((c) => c.label).join(", ") + (changes.length > 3 ? `, +${changes.length - 3} more` : ""),
+    iconKey: "menu",
+    affectedSurface: "/dashboard/menu",
+    childCount: draftItems.length,
+    payload: { items: draftItems },
+    preview: {
+      count: changes.length,
+      changes: changes.map((c) => ({ item: c.label, updates: c.after })),
+    },
+  });
+
   return {
     content: JSON.stringify({
       preview: true,
       count: changes.length,
       changes: changes.map((c) => ({ item: c.label, updates: c.after })),
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
     }),
     preview: {
       pendingActionId,
       description: `Batch update ${changes.length} items`,
       changes,
     },
+    draftId: draft.id,
   };
 }
 
@@ -2054,6 +2260,40 @@ async function execCreatePromotion(
 
   const pendingActionId = createPendingAction(restaurantId, clerkId, "create_promotion", input, promoData);
 
+  const draft = await createDraft(restaurantId, clerkId, {
+    actionType: "promotion_create",
+    source: DraftActionSource.chat,
+    title: `Create "${title}" promotion`,
+    subtitle: `${items.length} item${items.length === 1 ? "" : "s"}${
+      promoData.promoPrice ? ` · ${formatPrice(promoData.promoPrice)}` : ""
+    }`,
+    iconKey: "promotion",
+    affectedSurface: "/dashboard/menu",
+    payload: {
+      type: promoData.type,
+      title: promoData.title,
+      subtitle: promoData.subtitle,
+      description: promoData.description,
+      badgeLabel: promoData.badgeLabel,
+      terms: promoData.terms,
+      promoPrice: promoData.promoPrice,
+      startsAt: promoData.startsAt,
+      endsAt: promoData.endsAt,
+      itemIds: promoData.itemIds,
+      isFeatured: false,
+    },
+    preview: {
+      type: promoData.type,
+      title: promoData.title,
+      subtitle: promoData.subtitle,
+      description: promoData.description,
+      badgeLabel: promoData.badgeLabel,
+      terms: promoData.terms,
+      promoPrice: promoData.promoPrice ? formatPrice(promoData.promoPrice) : null,
+      items: items.map((i) => i.name),
+    },
+  });
+
   return {
     content: JSON.stringify({
       preview: true,
@@ -2067,6 +2307,8 @@ async function execCreatePromotion(
         promoPrice: promoData.promoPrice ? formatPrice(promoData.promoPrice) : null,
         items: items.map((i) => i.name),
       },
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
     }),
     preview: {
       pendingActionId,
@@ -2080,6 +2322,7 @@ async function execCreatePromotion(
           : []),
       ],
     },
+    draftId: draft.id,
   };
 }
 
@@ -2124,6 +2367,29 @@ async function execToggleAvailability(
 
   const pendingActionId = createPendingAction(restaurantId, clerkId, "toggle_availability", input, null);
 
+  const draft = await createDraft(restaurantId, clerkId, {
+    // Always bulk so the renderer has a per-item preview even when N=1.
+    // SingleCard has no availability_toggle case and would JSON-dump the
+    // preview otherwise.
+    kind: DraftActionKind.bulk,
+    actionType: "availability_toggle",
+    source: DraftActionSource.chat,
+    title: `${available ? "Mark available" : "Mark sold out"} · ${items.length} item${items.length === 1 ? "" : "s"}`,
+    subtitle: items.map((i) => i.name).slice(0, 3).join(", ") + (items.length > 3 ? `, +${items.length - 3} more` : ""),
+    iconKey: "menu",
+    affectedSurface: "/dashboard/menu",
+    childCount: items.length,
+    payload: { menuItemIds: items.map((i) => i.id), available },
+    preview: {
+      action: available ? "Mark available" : "Mark sold out",
+      items: items.map((i) => ({
+        name: i.name,
+        currentStatus: i.isAvailable ? "Available" : "Sold out",
+        nextStatus: available ? "Available" : "Sold out",
+      })),
+    },
+  });
+
   return {
     content: JSON.stringify({
       preview: true,
@@ -2132,6 +2398,8 @@ async function execToggleAvailability(
         name: i.name,
         currentStatus: i.isAvailable ? "Available" : "Sold out",
       })),
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
     }),
     preview: {
       pendingActionId,
@@ -2142,6 +2410,7 @@ async function execToggleAvailability(
         after: available ? "Available" : "Sold out",
       })),
     },
+    draftId: draft.id,
   };
 }
 
@@ -2200,11 +2469,34 @@ async function execCreateMenuItem(
 
   const pendingActionId = createPendingAction(restaurantId, clerkId, "create_menu_item", input, null);
 
+  const draft = await createDraft(restaurantId, clerkId, {
+    actionType: "menu_item_create",
+    source: DraftActionSource.chat,
+    title: `Add "${input.name}" to ${section.name}`,
+    subtitle: `${formatPrice(Number(input.price))} · new item`,
+    iconKey: "menu",
+    affectedSurface: "/dashboard/menu",
+    payload: {
+      sectionId: String(input.section_id),
+      name: String(input.name),
+      description: input.description ? String(input.description) : null,
+      price: Number(input.price),
+    },
+    preview: {
+      sectionName: section.name,
+      itemName: String(input.name),
+      price: formatPrice(Number(input.price)),
+      description: input.description ? String(input.description) : null,
+    },
+  });
+
   return {
     content: JSON.stringify({
       preview: true,
       section: section.name,
       item: { name: input.name, price: formatPrice(Number(input.price)), description: input.description ?? null },
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
     }),
     preview: {
       pendingActionId,
@@ -2214,6 +2506,7 @@ async function execCreateMenuItem(
         { label: "Section", before: null, after: section.name },
       ],
     },
+    draftId: draft.id,
   };
 }
 
@@ -2254,13 +2547,30 @@ async function execCreateMenuSection(
   // Preview
   const pendingActionId = createPendingAction(restaurantId, clerkId, "create_menu_section", input, null);
 
+  const draft = await createDraft(restaurantId, clerkId, {
+    actionType: "menu_section_create",
+    source: DraftActionSource.chat,
+    title: `Create section "${input.name}"`,
+    subtitle: "New menu section",
+    iconKey: "menu",
+    affectedSurface: "/dashboard/menu",
+    payload: { name: String(input.name) },
+    preview: { sectionName: String(input.name) },
+  });
+
   return {
-    content: JSON.stringify({ preview: true, sectionName: input.name }),
+    content: JSON.stringify({
+      preview: true,
+      sectionName: input.name,
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
+    }),
     preview: {
       pendingActionId,
       description: `Create section "${input.name}"`,
       changes: [{ label: "New Section", before: null, after: String(input.name) }],
     },
+    draftId: draft.id,
   };
 }
 
@@ -2325,16 +2635,39 @@ async function execUpdateRestaurant(
 
   const pendingActionId = createPendingAction(restaurantId, clerkId, "update_restaurant", input, null);
 
+  const draft = await createDraft(restaurantId, clerkId, {
+    actionType: "restaurant_profile_update",
+    source: DraftActionSource.chat,
+    title: "Update restaurant profile",
+    subtitle: changes.map((c) => c.label).join(" · "),
+    iconKey: "menu",
+    affectedSurface: "/dashboard/appearance",
+    payload: {
+      ...(input.description !== undefined && { description: String(input.description) }),
+      ...(input.whatsapp_number !== undefined && { whatsappNumber: String(input.whatsapp_number) }),
+      ...(input.location !== undefined && { location: String(input.location) }),
+      ...(input.address !== undefined && { address: String(input.address) }),
+      ...(input.phone !== undefined && { phone: String(input.phone) }),
+      ...(input.website !== undefined && { website: String(input.website) }),
+    },
+    preview: {
+      changes: changes.map((c) => ({ field: c.label, from: c.before, to: c.after })),
+    },
+  });
+
   return {
     content: JSON.stringify({
       preview: true,
       changes: changes.map((c) => ({ field: c.label, from: c.before, to: c.after })),
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
     }),
     preview: {
       pendingActionId,
       description: "Update restaurant profile",
       changes,
     },
+    draftId: draft.id,
   };
 }
 
@@ -2379,11 +2712,33 @@ async function execPublishMenu(
 
   const pendingActionId = createPendingAction(restaurantId, clerkId, "publish_menu", input, null);
 
+  const draft = await createDraft(restaurantId, clerkId, {
+    actionType: "publish_menu",
+    source: DraftActionSource.chat,
+    title: publish ? `Publish ${restaurant.name}` : `Unpublish ${restaurant.name}`,
+    subtitle: restaurant.isPublished
+      ? publish
+        ? "Already published"
+        : "Will hide the public menu"
+      : publish
+        ? "Will go live to diners"
+        : "Already unpublished",
+    iconKey: "menu",
+    affectedSurface: "/dashboard",
+    payload: { publish },
+    preview: {
+      currentStatus: restaurant.isPublished ? "Published" : "Unpublished",
+      nextStatus: publish ? "Published" : "Unpublished",
+    },
+  });
+
   return {
     content: JSON.stringify({
       preview: true,
       action: publish ? "Publish" : "Unpublish",
       currentStatus: restaurant.isPublished ? "Published" : "Unpublished",
+      draftId: draft.id,
+      inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
     }),
     preview: {
       pendingActionId,
@@ -2396,6 +2751,7 @@ async function execPublishMenu(
         },
       ],
     },
+    draftId: draft.id,
   };
 }
 
@@ -3110,4 +3466,484 @@ async function execGetWidgetStatus(restaurantId: string): Promise<ToolResult> {
         : "Widget embeds are available on Pro and Portfolio plans.",
     }),
   };
+}
+
+// ── plan_marketing_week — bundle macro ────────────────────────────
+//
+// Produces ONE parent DraftAction (kind=bundle, actionType=marketing_bundle)
+// plus up to 3 children: a featured promotion (if a hot menu item exists),
+// an ad campaign (if an event moment falls in the next 14 days), and a
+// WhatsApp blast (if there are 30+ lapsed regulars). Each child uses a Phase
+// 4 actionType — promotion_create / ad_campaign_create / whatsapp_campaign_create
+// — that maps to a real shipper that writes the entity in DRAFT status.
+// Owner reviews the bundle, taps "Ship all" → every entity lands at the same
+// time and the owner finalizes each in its native surface.
+
+async function execPlanMarketingWeek(
+  restaurantId: string,
+  clerkId: string,
+  input: Input
+): Promise<ToolResult> {
+  const themeHint = input.theme_hint ? String(input.theme_hint) : null;
+  const now = new Date();
+  const horizonStart = new Date(now);
+  const horizonEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+  // 1. Restaurant context
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: {
+      name: true,
+      cuisineType: true,
+      location: true,
+      eventCalendarEnabled: true,
+    },
+  });
+  if (!restaurant) {
+    return { content: JSON.stringify({ error: "Restaurant not found" }) };
+  }
+
+  // 2. Hero menu item — pick the highest-priced available item with an image,
+  //    a proxy for "this is the one to feature" until we have order analytics
+  //    integrated into the planner.
+  const heroItem = await prisma.menuItem.findFirst({
+    where: {
+      restaurantId,
+      isAvailable: true,
+      OR: [{ imageStatus: "ready" }, { imageStatus: "generated" }],
+    },
+    orderBy: { price: "desc" },
+    select: { id: true, name: true, price: true },
+  });
+
+  // 3. Upcoming event from the active AdProject set (event-stager already
+  //    staged briefs for the prep window). Pick the soonest unconsumed one
+  //    if any.
+  const upcomingAdProject = await prisma.adProject.findFirst({
+    where: {
+      restaurantId,
+      sourceMomentStartsOn: { gte: horizonStart, lte: horizonEnd },
+      status: "draft",
+    },
+    orderBy: { sourceMomentStartsOn: "asc" },
+    select: {
+      id: true,
+      name: true,
+      campaignType: true,
+      goal: true,
+      countries: true,
+      cuisines: true,
+      targetPlatforms: true,
+      budgetTier: true,
+      budgetAed: true,
+      sourceMomentId: true,
+      sourceMomentStartsOn: true,
+    },
+  });
+
+  // 4. Lapsed regulars (haven't ordered in 21d, marketing-opted-in).
+  const lapsedCutoff = new Date(now.getTime() - 21 * 24 * 60 * 60 * 1000);
+  const lapsedCount = await prisma.customer.count({
+    where: {
+      restaurantId,
+      marketingOptIn: true,
+      OR: [{ lastOrderAt: { lt: lapsedCutoff } }, { lastOrderAt: null }],
+      orderCount: { gt: 0 },
+    },
+  });
+
+  // ── Plan children ──
+  const children: CreateDraftParams[] = [];
+  const themeOfWeek =
+    themeHint ??
+    (upcomingAdProject?.name
+      ? `${upcomingAdProject.name} weekend`
+      : heroItem
+        ? `${heroItem.name} hero week`
+        : "Stay top-of-mind");
+
+  // Child 1: featured promotion
+  if (heroItem) {
+    children.push({
+      actionType: "promotion_create",
+      source: DraftActionSource.quick_prompt,
+      title: `Feature "${heroItem.name}" this week`,
+      subtitle: `Promo price suggestion · ${formatPrice(Number(heroItem.price) * 0.85)}`,
+      iconKey: "promotion",
+      affectedSurface: "/dashboard/menu",
+      payload: {
+        type: "discounted_item",
+        title: `${heroItem.name} · ${themeOfWeek}`,
+        description: `Highlighted dish for ${themeOfWeek}.`,
+        promoPrice: Math.round(Number(heroItem.price) * 0.85 * 100) / 100,
+        startsAt: now.toISOString(),
+        endsAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        itemIds: [heroItem.id],
+        isFeatured: true,
+      },
+      preview: {
+        type: "discounted_item",
+        title: `${heroItem.name} · ${themeOfWeek}`,
+        items: [heroItem.name],
+        promoPrice: formatPrice(Number(heroItem.price) * 0.85),
+      },
+    });
+  }
+
+  // Child 2: Meta ad campaign tied to upcoming event
+  if (upcomingAdProject) {
+    const launchAt =
+      upcomingAdProject.sourceMomentStartsOn ??
+      new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+    children.push({
+      actionType: "ad_campaign_create",
+      source: DraftActionSource.quick_prompt,
+      title: `Meta ad · ${upcomingAdProject.name}`,
+      subtitle: `${upcomingAdProject.targetPlatforms.join(", ")} · ${upcomingAdProject.budgetAed} AED`,
+      iconKey: "ad",
+      affectedSurface: `/dashboard/ad-studio`,
+      payload: {
+        name: `${upcomingAdProject.name} · ${themeOfWeek}`,
+        campaignType: upcomingAdProject.campaignType,
+        goal: upcomingAdProject.goal,
+        countries: upcomingAdProject.countries,
+        cuisines: upcomingAdProject.cuisines,
+        targetPlatforms: upcomingAdProject.targetPlatforms,
+        budgetTier: upcomingAdProject.budgetTier,
+        budgetAed: upcomingAdProject.budgetAed,
+        durationWeeks: 1,
+        startsOn: launchAt.toISOString(),
+        primaryDishId: heroItem?.id ?? null,
+        briefJson: { themeOfWeek, sourceBundle: true },
+        // Idempotency: when event-stager has already staged a project for
+        // this moment, the shipper will UPDATE that row with the bundle's
+        // enriched theme/hero details instead of creating a duplicate.
+        sourceMomentId: upcomingAdProject.sourceMomentId ?? null,
+        sourceMomentYear: upcomingAdProject.sourceMomentStartsOn?.getFullYear() ?? null,
+      },
+      preview: {
+        eventName: upcomingAdProject.name,
+        budgetAed: upcomingAdProject.budgetAed,
+        platforms: upcomingAdProject.targetPlatforms,
+        startsOn: launchAt.toISOString(),
+      },
+    });
+  }
+
+  // Child 3: WhatsApp win-back blast — only if (a) enough lapsed regulars
+  // AND (b) the restaurant actually has an approved WhatsApp template for
+  // win-back messaging. Drafting a campaign tied to an unapproved template
+  // creates a dead-end card: it lands in CRM, owner tries to send, Meta
+  // rejects it. Better to skip the child entirely than to surface that.
+  if (lapsedCount >= 30) {
+    const approvedTemplate = await prisma.whatsAppTemplate.findFirst({
+      where: {
+        restaurantId,
+        status: "approved",
+        OR: [
+          { name: { contains: "winback", mode: "insensitive" } },
+          { category: "MARKETING" },
+        ],
+      },
+      select: { name: true },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (approvedTemplate) {
+      const heroLabel = heroItem ? `your favourite ${heroItem.name.toLowerCase()}` : "your favourite dish";
+      children.push({
+        actionType: "whatsapp_campaign_create",
+        source: DraftActionSource.quick_prompt,
+        title: `Win-back blast · ${lapsedCount} lapsed regulars`,
+        subtitle: themeOfWeek,
+        iconKey: "whatsapp",
+        affectedSurface: "/dashboard/crm",
+        payload: {
+          name: `Win-back · ${themeOfWeek}`,
+          campaignType: "inactive_30",
+          templateName: approvedTemplate.name,
+          body: `Hey {{name}} 👋 ${restaurant.name} misses you! ${heroLabel} is back this week — tap to reorder.`,
+          targetSegment: "lapsed_21d",
+          promotionId: null,
+        },
+        preview: {
+          segment: "Lapsed 21d+",
+          audienceSize: lapsedCount,
+          template: approvedTemplate.name,
+          bodyPreview: `Hey {{name}} 👋 ${restaurant.name} misses you! ${heroLabel}…`,
+        },
+      });
+    }
+  }
+
+  if (children.length === 0) {
+    return {
+      content: JSON.stringify({
+        error:
+          "Not enough signal to plan a bundle yet — try adding a featured dish or finishing onboarding first.",
+      }),
+    };
+  }
+
+  // ── Aggregate impact ──
+  // Formulas are coarse estimates, calibrated to real UAE F&B Meta benchmarks:
+  //   - Reach: ~35 AED CPM is the working mid-funnel rate for UAE food
+  //     (i.e., 1000 impressions per 35 AED). spendAed / 35 * 1000 = spend×28.5
+  //     Rounded down to ×24 to undersell rather than oversell — the BundleCard
+  //     stat is read in seconds and an obviously-too-high number burns trust
+  //     instantly when the owner cross-checks against Ads Manager.
+  //   - Projected orders: 6% of ad spend (1.5% landing CTR × 4% conversion)
+  //     plus 4% of lapsed-customer audience (WhatsApp win-back rates).
+  const estimatedSpendAed = upcomingAdProject?.budgetAed ?? 0;
+  const projectedOrders = Math.max(
+    8,
+    Math.round(estimatedSpendAed * 0.06) + Math.round(lapsedCount * 0.04)
+  );
+  const estimatedReach = Math.max(
+    lapsedCount,
+    Math.round(estimatedSpendAed * 24) + lapsedCount
+  );
+
+  // Resolve User.id once for the whole batch — saves N lookups inside the txn.
+  const ownerUser = await prisma.user.findUnique({
+    where: { clerkId },
+    select: { id: true },
+  });
+  if (!ownerUser) {
+    return { content: JSON.stringify({ error: "User session not found" }) };
+  }
+
+  // ── Write parent + children atomically ──
+  // If any child fails to insert, the parent rolls back too. Without this a
+  // half-formed bundle (parent.childCount=3 but only 2 child rows) would ship
+  // "2 of 3" silently on Approve, with the BundleCard mis-counting.
+  const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  const parent = await prisma.$transaction(async (tx) => {
+    const p = await tx.draftAction.create({
+      data: {
+        restaurantId,
+        ownerUserId: ownerUser.id,
+        kind: DraftActionKind.bundle,
+        actionType: "marketing_bundle",
+        source: DraftActionSource.quick_prompt,
+        title: `${themeOfWeek} · ${children.length}-action bundle`,
+        subtitle: children.map((c) => c.iconKey).join(" · "),
+        iconKey: "ad",
+        affectedSurface: "/dashboard",
+        childCount: children.length,
+        estimatedImpact: {
+          reach: estimatedReach,
+          spendAed: estimatedSpendAed,
+          projectedOrders,
+        },
+        payload: {
+          themeOfWeek,
+          childActionTypes: children.map((c) => c.actionType),
+        },
+        preview: {
+          themeOfWeek,
+          childCount: children.length,
+          children: children.map((c) => ({
+            actionType: c.actionType,
+            title: c.title,
+            iconKey: c.iconKey,
+          })),
+          estimatedImpact: {
+            reach: estimatedReach,
+            spendAed: estimatedSpendAed,
+            projectedOrders,
+          },
+        },
+        expiresAt,
+      },
+    });
+
+    for (const childParams of children) {
+      await tx.draftAction.create({
+        data: {
+          restaurantId,
+          ownerUserId: ownerUser.id,
+          parentDraftId: p.id,
+          kind: childParams.kind ?? DraftActionKind.single,
+          actionType: childParams.actionType,
+          source: childParams.source,
+          title: childParams.title,
+          subtitle: childParams.subtitle ?? null,
+          iconKey: childParams.iconKey ?? null,
+          affectedSurface: childParams.affectedSurface ?? null,
+          payload: childParams.payload,
+          preview: childParams.preview,
+          childCount: childParams.childCount ?? 0,
+          expiresAt,
+        },
+      });
+    }
+
+    return p;
+  });
+
+  return {
+    content: JSON.stringify({
+      preview: true,
+      themeOfWeek,
+      bundleChildCount: children.length,
+      estimatedImpact: {
+        reach: estimatedReach,
+        spendAed: estimatedSpendAed,
+        projectedOrders,
+      },
+      draftId: parent.id,
+      inboxNotice: "Bundle drafted in the Sous Chef Inbox — Ship all to fire every child at once.",
+    }),
+    draftId: parent.id,
+  };
+}
+
+// ── draft_review_replies ──────────────────────────────────────────
+//
+// Pulls recent Google reviews (throttled), reads unanswered ones, asks
+// Claude to draft one reply per review, persists a bulk DraftAction. The
+// shipper (shipReviewReply) writes draftReply + flips status to
+// draft_approved per GbpReview row — it does NOT post back to Google.
+// The inbox card carries a "Copy reply" affordance and the owner pastes
+// each reply into their own GBP. When GBP API OAuth integration lands
+// later, the shipper switches to auto-post and the copy step disappears.
+
+async function execDraftReviewReplies(
+  restaurantId: string,
+  clerkId: string,
+  input: Input
+): Promise<ToolResult> {
+  const force = Boolean(input.force_refresh);
+  const limit = Math.min(Math.max(Number(input.limit ?? 8), 1), 15);
+
+  // Pull fresh reviews (or honor the 6h throttle). Errors here surface to
+  // the owner — likely missing GBP placeId, which the message hints at.
+  let pullResult;
+  try {
+    pullResult = await pullGoogleReviews(restaurantId, { force });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Apify pull failed";
+    return {
+      content: JSON.stringify({
+        error: `Couldn't refresh reviews from Google: ${message}. You can still draft replies for already-pulled reviews.`,
+      }),
+    };
+  }
+
+  if (pullResult.status === "no_connection") {
+    return {
+      content: JSON.stringify({
+        error:
+          "Google Business Profile isn't connected for this restaurant. Connect it in /dashboard/google first.",
+      }),
+    };
+  }
+  if (pullResult.status === "no_place_id") {
+    return {
+      content: JSON.stringify({
+        error:
+          "We couldn't find your place on Google Maps. Add a place ID in /dashboard/google to enable review pulling.",
+      }),
+    };
+  }
+
+  const reviews = await listUnansweredReviews(restaurantId, { limit });
+  if (reviews.length === 0) {
+    return {
+      content: JSON.stringify({
+        message:
+          pullResult.status === "throttled"
+            ? "No unanswered reviews right now (cached data; ask again with force_refresh:true to pull fresh)."
+            : "No unanswered reviews — every recent review already has a reply or has been dismissed.",
+        pullStatus: pullResult.status,
+        newReviews: pullResult.newReviews,
+      }),
+    };
+  }
+
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { name: true, cuisineType: true, location: true },
+  });
+  if (!restaurant) {
+    return { content: JSON.stringify({ error: "Restaurant not found" }) };
+  }
+
+  const draftResult = await draftReplies(restaurant, reviews);
+  // Bookkeeping: log under its own category so review-reply spend doesn't
+  // erode the owner's monthly description_enhance allotment.
+  await logAiUsage(
+    restaurantId,
+    "review_reply_draft",
+    draftResult.tokensIn,
+    draftResult.tokensOut
+  );
+
+  // Mark each review as draft_pending so a parallel chat session doesn't
+  // re-draft the same row. Owner approval (shipReviewReply) flips to
+  // draft_approved; rejection should flip back to unanswered — done via the
+  // rejectDraft path catching review_reply specifically.
+  const draftedReviewIds = draftResult.drafts.map((d) => d.reviewId);
+  await prisma.gbpReview.updateMany({
+    where: { id: { in: draftedReviewIds }, restaurantId, status: "unanswered" },
+    data: { status: "draft_pending", draftedAt: new Date() },
+  });
+
+  const reviewById = new Map(reviews.map((r) => [r.id, r]));
+  const items = draftResult.drafts.map((d) => {
+    const review = reviewById.get(d.reviewId);
+    return {
+      reviewId: d.reviewId,
+      reply: d.reply,
+      reviewerName: review?.reviewerName ?? "Unknown",
+      rating: review?.rating ?? 0,
+      reviewText: review?.text ?? "",
+      publishedAt: review?.publishedAt?.toISOString() ?? null,
+    };
+  });
+
+  const draft = await createDraft(restaurantId, clerkId, {
+    kind: DraftActionKind.bulk,
+    actionType: "review_reply",
+    source: DraftActionSource.chat,
+    title: `${items.length} review repl${items.length === 1 ? "y" : "ies"} drafted`,
+    subtitle: summariseReviewBatch(items),
+    iconKey: "review",
+    affectedSurface: "/dashboard/google",
+    childCount: items.length,
+    payload: {
+      items: items.map(({ reviewId, reply }) => ({ reviewId, reply })),
+    },
+    preview: { items },
+  });
+
+  return {
+    content: JSON.stringify({
+      preview: true,
+      count: items.length,
+      pulledFromGoogle: pullResult.newReviews,
+      draftId: draft.id,
+      inboxNotice:
+        "Drafted in the Sous Chef Inbox — approve to mark replies ready, then copy each one into Google.",
+    }),
+    draftId: draft.id,
+  };
+}
+
+function summariseReviewBatch(
+  items: Array<{ rating: number; reviewerName: string }>
+): string {
+  const fiveStars = items.filter((i) => i.rating === 5).length;
+  const lowStars = items.filter((i) => i.rating <= 2).length;
+  const parts: string[] = [];
+  if (fiveStars) parts.push(`${fiveStars}× 5★`);
+  if (lowStars) parts.push(`${lowStars}× ≤2★`);
+  const head = items
+    .slice(0, 2)
+    .map((i) => i.reviewerName.split(/\s+/)[0])
+    .join(", ");
+  return [parts.join(" · "), head ? `from ${head}${items.length > 2 ? ` +${items.length - 2}` : ""}` : null]
+    .filter(Boolean)
+    .join(" · ");
 }

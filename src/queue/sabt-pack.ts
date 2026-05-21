@@ -21,10 +21,12 @@
 //     ad_projects.(restaurant_id, sabt_pack_week_start_date)).
 
 import PgBoss from "pg-boss";
+import { DraftActionSource } from "@prisma/client";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
 import { getBoss } from "@/queue/image-generation";
 import { sendLifecycleEmail } from "@/services/email";
+import { ensureSystemDraftForAdProject } from "@/services/draft-actions";
 import {
   runSabtPackGeneration,
   sundayOfThisWeekUae,
@@ -205,6 +207,61 @@ async function processGenerateJob(job: GenerateWorkerJob) {
     adProjectId: result.adProjectId,
     themeOfWeek: result.themeOfWeek,
   });
+
+  // Mirror the weekly pack into the Sous Chef Inbox so it lives alongside
+  // chat-originated drafts. Failure here must NOT block the email flow.
+  try {
+    await mirrorSabtPackToInbox({
+      restaurantId,
+      adProjectId: result.adProjectId,
+      themeOfWeek: result.themeOfWeek,
+      weekStartDate,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[sabt-pack] inbox-draft mirror failed for ${result.adProjectId}: ${message}`);
+  }
+}
+
+async function mirrorSabtPackToInbox(args: {
+  restaurantId: string;
+  adProjectId: string;
+  themeOfWeek: string | null;
+  weekStartDate: string;
+}) {
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: args.restaurantId },
+    select: { ownerId: true, name: true },
+  });
+  if (!restaurant) return;
+
+  // ensureSystemDraftForAdProject is idempotent — protects against the
+  // duplicate-draft case on email-retry runs (where shouldNotifyOwner fires
+  // again for a pack whose previous mirror succeeded).
+  await ensureSystemDraftForAdProject(
+    args.restaurantId,
+    restaurant.ownerId,
+    args.adProjectId,
+    {
+      actionType: "sabt_pack_review",
+      source: DraftActionSource.sabt_pack,
+      title: `Sabt Pack ready · 7 posts for the week`,
+      subtitle: args.themeOfWeek
+        ? `Theme: ${args.themeOfWeek}`
+        : "Open Ad Studio to review and approve",
+      iconKey: "ad",
+      affectedSurface: `/dashboard/ad-studio/weekly/${args.adProjectId}`,
+      payload: {
+        adProjectId: args.adProjectId,
+        weekStartDate: args.weekStartDate,
+      },
+      preview: {
+        themeOfWeek: args.themeOfWeek,
+        weekStartDate: args.weekStartDate,
+        slotCount: 7,
+      },
+    }
+  );
 }
 
 /** Sunday-morning email to the restaurant owner. Updates `sabt_pack_delivered_at`

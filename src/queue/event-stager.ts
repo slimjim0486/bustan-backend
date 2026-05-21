@@ -24,6 +24,8 @@ import { getBoss } from "@/queue/image-generation";
 import { sendLifecycleEmail } from "@/services/email";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { campaignArchetypes } from "@/services/ad-studio/campaigns";
+import { ensureSystemDraftForAdProject } from "@/services/draft-actions";
+import { DraftActionSource } from "@prisma/client";
 import type { CalendarMoment, CountryCode } from "@/services/ad-studio/types";
 import {
   buildBrandVoiceFromMoment,
@@ -197,6 +199,81 @@ async function processRunJob(restaurantId: string) {
         fromDate: planned.fromDate,
         prepDeadline: planned.prepDeadline,
       });
+    }
+  }
+
+  // Mirror EVERY active staging into the Sous Chef Inbox — not just the ones
+  // created on this run. A first-day mirror failure (DB blip, restart) would
+  // otherwise leave the owner with an emailed-but-invisible draft forever:
+  // tomorrow's run swallows the P2002 in stageMomentForRestaurant and skips
+  // the mirror entirely. ensureSystemDraftForAdProject is idempotent — it
+  // no-ops when a pending/approved DraftAction already exists.
+  const plannedKeys = plannedStagings.map((p) => ({
+    momentId: p.moment.id,
+    year: p.year,
+  }));
+  const activeStagings = await prisma.adProject.findMany({
+    where: {
+      restaurantId,
+      OR: plannedKeys.map(({ momentId, year }) => ({
+        sourceMomentId: momentId,
+        sourceMomentYear: year,
+      })),
+    },
+    select: {
+      id: true,
+      sourceMomentId: true,
+      sourceMomentYear: true,
+    },
+  });
+  const plannedByKey = new Map(
+    plannedStagings.map((p) => [`${p.moment.id}:${p.year}`, p])
+  );
+  for (const project of activeStagings) {
+    if (!project.sourceMomentId || project.sourceMomentYear == null) continue;
+    const planned = plannedByKey.get(
+      `${project.sourceMomentId}:${project.sourceMomentYear}`
+    );
+    if (!planned) continue;
+
+    const daysUntilDeadline = Math.max(
+      0,
+      Math.ceil((planned.prepDeadline.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
+    );
+    try {
+      await ensureSystemDraftForAdProject(
+        restaurantId,
+        restaurant.ownerId,
+        project.id,
+        {
+          actionType: "ad_project_review",
+          source: DraftActionSource.event_stager,
+          title: `${planned.moment.name} ${planned.year} campaign brief ready`,
+          subtitle:
+            daysUntilDeadline === 0
+              ? "Prep deadline is today — open Ad Studio to generate"
+              : `${daysUntilDeadline} day${daysUntilDeadline === 1 ? "" : "s"} until prep deadline`,
+          iconKey: "ad",
+          affectedSurface: `/dashboard/ad-studio/${project.id}`,
+          payload: {
+            adProjectId: project.id,
+            momentId: planned.moment.id,
+            momentYear: planned.year,
+          },
+          preview: {
+            momentName: planned.moment.name,
+            momentKind: planned.moment.kind,
+            fromDate: planned.fromDate.toISOString(),
+            prepDeadline: planned.prepDeadline.toISOString(),
+            daysUntilDeadline,
+          },
+        }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[event-stager] inbox-draft mirror failed for ${project.id}: ${message}`
+      );
     }
   }
 

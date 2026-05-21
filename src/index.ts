@@ -22,6 +22,7 @@ import { startGscSyncWorker } from "@/queue/gsc-sync";
 import { startSabtPackWorker } from "@/queue/sabt-pack";
 import { startEventStagerWorker } from "@/queue/event-stager";
 import { startCoworkerDailyBriefWorker } from "@/queue/coworker-daily-brief";
+import { startDraftShipWorker } from "@/queue/draft-ship";
 import { adStudioRoute, adStudioPublicRoute } from "@/routes/ad-studio";
 import { sabtPackRoute, sabtPackAdminRoute } from "@/routes/sabt-pack";
 import { adminRoute } from "@/routes/admin";
@@ -55,6 +56,7 @@ import { clerkWebhooksRoute } from "@/routes/clerk-webhooks";
 import { coworkerRoute } from "@/routes/coworker";
 import { coworkerAdminRoute } from "@/routes/coworker-admin";
 import { coworkerWebhooksRoute } from "@/routes/coworker-webhooks";
+import { inboxRoute } from "@/routes/inbox";
 
 initSentry();
 
@@ -108,6 +110,7 @@ app.route("/api/admin/sabt-pack", sabtPackAdminRoute);
 app.route("/api/coworker", coworkerRoute);
 app.route("/api/admin/coworker", coworkerAdminRoute);
 app.route("/api/webhooks", coworkerWebhooksRoute);
+app.route("/api/inbox", inboxRoute);
 
 serve(
   {
@@ -206,4 +209,12 @@ startCoworkerDailyBriefWorker()
   })
   .catch((error) => {
     console.error("pg-boss coworker-daily-brief worker failed to start", error);
+  });
+
+startDraftShipWorker()
+  .then(() => {
+    console.log("pg-boss draft-ship worker started");
+  })
+  .catch((error) => {
+    console.error("pg-boss draft-ship worker failed to start", error);
   });
