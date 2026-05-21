@@ -1285,15 +1285,20 @@ async function shipReviewReply(draft: DraftAction): Promise<ShipResult> {
  */
 async function shipReviewAcknowledgment(draft: DraftAction): Promise<ShipResult> {
   // The marketing_bundle parent is a coordination row; its children are the
-  // real shippers. A generic "open /dashboard to continue" message would be
-  // a no-op instruction (the owner is already on /dashboard), so we say
-  // something meaningful about the children that just shipped instead.
+  // real shippers. The history view should tell the owner WHERE each child
+  // landed, not just "respective surfaces".
   if (draft.actionType === "marketing_bundle") {
+    const previewChildren =
+      (draft.preview as { children?: Array<{ actionType: string }> })?.children ?? [];
+    const destinations = summariseBundleDestinations(previewChildren);
     return {
       ok: true,
-      message: `Marketing bundle shipped · ${draft.childCount} action${draft.childCount === 1 ? "" : "s"} queued in their respective surfaces`,
+      message: destinations
+        ? `Marketing bundle shipped · ${destinations}`
+        : `Marketing bundle shipped · ${draft.childCount} action${draft.childCount === 1 ? "" : "s"} queued`,
       data: {
         childCount: draft.childCount,
+        destinations,
         acknowledgedAt: new Date().toISOString(),
       },
     };
@@ -1307,6 +1312,77 @@ async function shipReviewAcknowledgment(draft: DraftAction): Promise<ShipResult>
       acknowledgedAt: new Date().toISOString(),
     },
   };
+}
+
+/**
+ * Server-side mirror of the frontend summariseBundleDestinations helper.
+ * Lives here so `shipResult.message` (stored in the DB + rendered in History)
+ * names where each bundle child actually landed.
+ */
+function summariseBundleDestinations(
+  children: Array<{ actionType: string }>
+): string {
+  if (children.length === 0) return "";
+  const buckets = new Map<string, { count: number; labels: Set<string> }>();
+  for (const child of children) {
+    const destination = destinationForActionType(child.actionType);
+    const label = actionTypeLabel(child.actionType);
+    const existing = buckets.get(destination) ?? { count: 0, labels: new Set() };
+    existing.count += 1;
+    existing.labels.add(label);
+    buckets.set(destination, existing);
+  }
+  return Array.from(buckets.entries())
+    .map(([destination, { count, labels }]) => {
+      const label = Array.from(labels).join("/");
+      const noun = count === 1 ? label : `${label}s`.replace(/ss$/, "s");
+      return `${count} ${noun} in ${destination}`;
+    })
+    .join(" · ");
+}
+
+function destinationForActionType(actionType: string): string {
+  if (actionType === "ad_campaign_create") return "Ad Studio";
+  if (actionType === "whatsapp_campaign_create") return "WhatsApp CRM";
+  if (actionType === "review_reply") return "Inbox";
+  if (actionType === "restaurant_profile_update") return "Storefront";
+  if (actionType === "publish_menu") return "Inbox";
+  return "Menu";
+}
+
+function actionTypeLabel(actionType: string): string {
+  switch (actionType) {
+    case "ad_campaign_create":
+      return "ad campaign";
+    case "whatsapp_campaign_create":
+      return "WhatsApp blast";
+    case "promotion_create":
+      return "promotion";
+    case "menu_description":
+    case "menu_descriptions_bulk":
+      return "description";
+    case "menu_item_create":
+      return "new item";
+    case "menu_section_create":
+      return "new section";
+    case "price_change":
+      return "price change";
+    case "menu_item_update":
+    case "menu_items_bulk_update":
+      return "item update";
+    case "availability_toggle":
+      return "availability change";
+    case "dietary_tags_apply":
+      return "dietary tag pass";
+    case "restaurant_profile_update":
+      return "profile update";
+    case "publish_menu":
+      return "publish toggle";
+    case "review_reply":
+      return "review reply";
+    default:
+      return actionType.replace(/_/g, " ");
+  }
 }
 
 // ── Inbox summary / list helpers ────────────────────────────────────────────
