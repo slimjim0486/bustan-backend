@@ -164,6 +164,31 @@ const envSchema = z.object({
    *  tracking + margin alerts. Defaults to a conservative 0.02 — refresh
    *  when first Meta invoice lands. */
   COWORKER_UTILITY_COST_USD: z.coerce.number().nonnegative().default(0.02),
+
+  // ── Market Pulse / Competitor Intelligence ────────────────────────
+  // Exa.ai is the search backbone for the weekly competitor data pull.
+  // Each competitor costs ~$0.035/week across 4 collectors (menu, promo,
+  // press, deep-web reviews). The shared-cache row in CompetitorSnapshot
+  // (unique on placeId+weekBucket) brings effective per-restaurant cost
+  // down to ~$0.55-1.10/month in dense neighborhoods.
+  //
+  // Kill switch: EXA_ENABLED=false short-circuits every Exa call and the
+  // weekly cron fanout, leaving the data layer (and any prior snapshots)
+  // intact. Defaults to true — the *real* safety gate is the presence of
+  // EXA_API_KEY (the orchestrator requires both), so leaving this true
+  // means "Market Pulse runs in any environment that has a key", which is
+  // the right production posture. Flip to false to stop spend mid-incident
+  // without code changes.
+  //
+  // Per-restaurant monthly USD cap: when ai_usage_logs.cost_usd for
+  // feature='competitor-intel' exceeds this in the current calendar month,
+  // the orchestrator auto-pauses that restaurant's refreshes and notifies
+  // the owner. Defaults to $5/restaurant/month (5-10x our expected spend,
+  // so it only trips on runaway behavior, not normal usage).
+  EXA_API_KEY: optionalString(),
+  EXA_ENABLED: z.coerce.boolean().default(true),
+  EXA_MONTHLY_USD_CAP_PER_RESTAURANT: z.coerce.number().nonnegative().default(5),
+  EXA_ORG_MONTHLY_USD_ALERT: z.coerce.number().nonnegative().default(400),
 });
 
 export const env = envSchema.parse(process.env);

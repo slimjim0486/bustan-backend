@@ -24,6 +24,14 @@ import {
 } from "@/services/description-writer";
 import { suggestDietaryTags } from "@/services/dietary-tagger";
 import { analyzeMenu } from "@/services/menu-analyzer";
+import { sundayOfThisWeekUae } from "@/services/sabt-pack";
+import type {
+  CompetitorChanges,
+  MenuItemSignal,
+  PressMentionSignal,
+  PromoSignal,
+  WebReviewSignal,
+} from "@/services/competitor-intel";
 
 // ── Tool Result Types ──────────────────────────────────────────
 
@@ -634,6 +642,30 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
     },
   },
 
+  // ── MARKET PULSE (Competitor Intelligence) ────────────────────
+  {
+    name: "get_competitor_activity",
+    description:
+      "Read what nearby competitors have done recently — new menu items + prices, promos/offers, press mentions, and deep-web reviews (Reddit, TripAdvisor, Zomato, Time Out). Snapshots are refreshed weekly by the Market Pulse cron (Sunday morning). Always include the week-over-week diff (`changes`) when answering 'what's changed' or 'who launched X' questions — that's the most actionable signal. If `status` is 'not_eligible', the restaurant is on Starter; suggest upgrading to Pro. If `status` is 'no_data_yet', tell the owner the first weekly pull lands Sunday and offer to check back. For portfolio owners, pass restaurant_id to query a different brand.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        restaurant_id: { type: "string", description: "Optional. Query a different brand (portfolio only)." },
+        week_bucket: {
+          type: "string",
+          description:
+            "Optional ISO date 'YYYY-MM-DD' for the Sunday of the week to read. Defaults to the current UAE week.",
+        },
+        limit: {
+          type: "number",
+          description:
+            "Max competitors to return (default 10, max 10). Useful to cap context for quick summaries.",
+        },
+      },
+      required: [],
+    },
+  },
+
   // ── BUSTAN PLATFORM KB ────────────────────────────────────────
   {
     name: "get_bustan_info",
@@ -724,6 +756,7 @@ export async function executeTool(
       "list_whatsapp_templates",
       "get_broadcast_performance",
       "get_widget_status",
+      "get_competitor_activity",
     ]);
     const targetId = crossBrandTools.has(toolName)
       ? await resolveTargetRestaurantId(restaurantId, clerkId, input)
@@ -814,6 +847,10 @@ export async function executeTool(
       // Widget
       case "get_widget_status":
         return await execGetWidgetStatus(targetId);
+
+      // Market Pulse
+      case "get_competitor_activity":
+        return await execGetCompetitorActivity(targetId, entitlements, input);
 
       // Bustan platform KB
       case "get_bustan_info":
@@ -3285,6 +3322,157 @@ async function execGetSeoAnalysis(restaurantId: string): Promise<ToolResult> {
       errorMessage: latest.errorMessage,
       createdAt: latest.createdAt.toISOString(),
       completedAt: latest.completedAt?.toISOString() ?? null,
+    }),
+  };
+}
+
+// =============================================================================
+// Market Pulse — read tool
+// =============================================================================
+
+/**
+ * Read recent competitor activity for the dashboard agent. Compact JSON
+ * shape — keeps Claude's context lean while still giving the model enough
+ * structure to synthesize natural-language summaries and chain follow-ups
+ * ("draft an Ad Studio counter-campaign for X's lunch promo").
+ *
+ * Lookup order:
+ *   1. requested week_bucket (defaults to current UAE Sunday)
+ *   2. fall back to PRIOR week if current has zero rows — the Sunday cron
+ *      runs at 02:00 UTC, so on Saturday a "this week" query would return
+ *      nothing. Falling back means owners get useful data 7 days/week.
+ *
+ * Gating:
+ *   • Not entitled → return { status: "not_eligible" } with upgrade hint.
+ *   • Entitled but no data ever → { status: "no_data_yet" } with cron hint.
+ *   • Entitled with data → { status: "ok", competitors: [...] }.
+ */
+async function execGetCompetitorActivity(
+  restaurantId: string,
+  entitlements: PlanEntitlements,
+  input: Input
+): Promise<ToolResult> {
+  if (!entitlements.competitorIntelligenceEnabled) {
+    return {
+      content: JSON.stringify({
+        status: "not_eligible",
+        message:
+          "Market Pulse is on Pro and Portfolio. Tell the owner upgrading unlocks weekly competitor menu, promo, press, and review tracking — and offer to walk them through plans (use get_bustan_info topic=pricing).",
+      }),
+    };
+  }
+
+  const requestedWeek =
+    typeof input.week_bucket === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.week_bucket)
+      ? input.week_bucket
+      : sundayOfThisWeekUae();
+  const limit = Math.min(
+    Math.max(typeof input.limit === "number" ? input.limit : 10, 1),
+    10
+  );
+
+  // Try the requested week first; if empty (e.g. Saturday before Sunday's
+  // cron), fall back to the prior week so we always return something useful.
+  async function loadForWeek(week: string) {
+    return prisma.competitorSnapshot.findMany({
+      where: { restaurantId, weekBucket: week },
+      orderBy: [{ distanceMeters: "asc" }, { reviewCount: "desc" }],
+      take: limit,
+    });
+  }
+
+  let weekBucket = requestedWeek;
+  let rows = await loadForWeek(weekBucket);
+  if (rows.length === 0) {
+    const prior = new Date(`${requestedWeek}T00:00:00Z`);
+    prior.setUTCDate(prior.getUTCDate() - 7);
+    const priorBucket = prior.toISOString().slice(0, 10);
+    const priorRows = await loadForWeek(priorBucket);
+    if (priorRows.length > 0) {
+      weekBucket = priorBucket;
+      rows = priorRows;
+    }
+  }
+
+  if (rows.length === 0) {
+    return {
+      content: JSON.stringify({
+        status: "no_data_yet",
+        message:
+          "No Market Pulse snapshots exist yet for this restaurant. The weekly cron runs Sunday morning (UAE) — first useful data lands the Sunday after the restaurant goes Pro. Suggest the owner check back on Monday.",
+        weekBucket: requestedWeek,
+      }),
+    };
+  }
+
+  // Compact per-competitor projection. Trim arrays aggressively — the
+  // model only needs enough signal to synthesize, not raw dumps.
+  const competitors = rows.map((row) => {
+    const menuItems = (row.menuItems as unknown as MenuItemSignal[]) ?? [];
+    const promotions = (row.promotions as unknown as PromoSignal[]) ?? [];
+    const pressMentions =
+      (row.pressMentions as unknown as PressMentionSignal[]) ?? [];
+    const webReviews = (row.webReviews as unknown as WebReviewSignal[]) ?? [];
+    const changes = (row.changes as unknown as CompetitorChanges) ?? null;
+
+    return {
+      name: row.name,
+      cuisine: row.cuisine,
+      distanceMeters: row.distanceMeters,
+      rating: row.rating !== null ? Number(row.rating) : null,
+      reviewCount: row.reviewCount,
+      topMenuItems: menuItems.slice(0, 5).map((m) => ({
+        name: m.name,
+        price: m.price,
+        currency: m.currency,
+      })),
+      menuItemsTotal: menuItems.length,
+      promotions: promotions.slice(0, 3).map((p) => ({
+        title: p.title,
+        publishedAt: p.publishedAt,
+      })),
+      pressMentions: pressMentions.slice(0, 3).map((p) => ({
+        title: p.title,
+        publication: p.publication,
+        publishedAt: p.publishedAt,
+      })),
+      webReviewsCount: webReviews.length,
+      // Diff is the highest-signal field — surface even on weeks with
+      // no movement so the model can confidently say "no changes."
+      changes: changes
+        ? {
+            addedDishes: changes.addedDishes.slice(0, 5).map((d) => ({
+              name: d.name,
+              price: d.price,
+            })),
+            removedDishes: changes.removedDishes.slice(0, 5).map((d) => d.name),
+            priceChanges: changes.priceChanges.slice(0, 5),
+            newPromos: changes.newPromos.slice(0, 3).map((p) => p.title),
+          }
+        : null,
+    };
+  });
+
+  // One-line headline the model can quote directly without re-counting.
+  const movementCount = competitors.filter(
+    (c) =>
+      c.changes !== null &&
+      (c.changes.addedDishes.length > 0 ||
+        c.changes.priceChanges.length > 0 ||
+        c.changes.newPromos.length > 0)
+  ).length;
+  const anyMovement = movementCount > 0;
+
+  return {
+    content: JSON.stringify({
+      status: "ok",
+      weekBucket,
+      isFromPriorWeek: weekBucket !== requestedWeek,
+      competitorsCount: competitors.length,
+      summary: anyMovement
+        ? `${movementCount} of ${competitors.length} nearby competitors made notable moves this week.`
+        : `${competitors.length} nearby competitors tracked; no notable changes this week.`,
+      competitors,
     }),
   };
 }

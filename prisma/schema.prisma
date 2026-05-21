@@ -1266,6 +1266,74 @@ model AiUsageLog {
   @@map("ai_usage_logs")
 }
 
+// Market Pulse / Competitor Intelligence. Weekly cron pulls competitor web
+// data (menu, promos, press, deep-web reviews) via Exa and persists one
+// snapshot per (competitor, week). The unique key on (competitorPlaceId,
+// weekBucket) lets two subscribed restaurants in the same neighborhood share
+// the same competitor row — we pay Exa once per competitor per week, no
+// matter how many of our customers compete with them.
+//
+// `restaurantId` records WHICH subject restaurant this snapshot was fetched
+// for (so we can rank by distance and surface it on their dashboard) but is
+// NOT part of the dedupe key. Multiple rows for the same (placeId, week) are
+// expected — one per subscribed neighbor — and that's intentional: each row
+// caches the distance computed from THAT neighbor's perspective.
+model CompetitorSnapshot {
+  id                String   @id @default(cuid())
+  restaurantId      String   @map("restaurant_id")
+  competitorPlaceId String   @map("competitor_place_id")
+  weekBucket        String   @map("week_bucket") // "YYYY-MM-DD" — Sunday of the week (UAE)
+
+  // Identity / proximity (from Google Maps nearbysearch)
+  name           String
+  address        String?
+  distanceMeters Int?    @map("distance_meters")
+  cuisine        String?
+  rating         Decimal? @db.Decimal(2, 1)
+  reviewCount    Int?     @map("review_count")
+
+  // Exa-derived payloads (each is an array of structured items; null if the
+  // collector failed for this competitor this week)
+  menuItems     Json? @map("menu_items")     // [{name, price, isNew, source}]
+  promotions    Json?                         // [{title, validUntil, source}]
+  pressMentions Json? @map("press_mentions") // [{title, url, publishedAt}]
+  webReviews    Json? @map("web_reviews")    // [{snippet, sentiment, source}]
+
+  // Per-collector status so the digest synthesizer can hedge when collectors
+  // partially failed ("3 of 5 competitors had menu data this week").
+  collectorStatus Json? @map("collector_status") // {menu, promo, press, reviews: "ok"|"failed"|"skipped"}
+
+  // Diff against the previous weekBucket for the SAME competitorPlaceId.
+  // Computed at write time; readers don't need to fetch the prior row.
+  changes Json? // {addedDishes: [...], priceChanges: [...], newPromos: [...]}
+
+  exaCostUsd Decimal? @map("exa_cost_usd") @db.Decimal(8, 4)
+  fetchedAt  DateTime @default(now()) @map("fetched_at")
+
+  @@unique([competitorPlaceId, weekBucket, restaurantId])
+  @@index([restaurantId, weekBucket])
+  @@index([competitorPlaceId, weekBucket])
+  @@map("competitor_snapshots")
+}
+
+// One row per restaurant per week. Synthesized after all CompetitorSnapshots
+// for the week land; holds the headline insight Sous Chef proactively delivers
+// on Monday morning + a CTA payload deep-linking into Ad Studio.
+model CompetitorIntelDigest {
+  id                String   @id @default(cuid())
+  restaurantId      String   @map("restaurant_id")
+  weekBucket        String   @map("week_bucket")
+  topInsight        String?  @map("top_insight")
+  recommendedAction Json?    @map("recommended_action") // {label, ctaRoute, ctaParams}
+  competitorsCount  Int      @default(0) @map("competitors_count")
+  notifiedAt        DateTime? @map("notified_at") // when Sous Chef pushed it
+  generatedAt       DateTime @default(now()) @map("generated_at")
+
+  @@unique([restaurantId, weekBucket])
+  @@index([restaurantId, generatedAt])
+  @@map("competitor_intel_digests")
+}
+
 model GbpConnection {
   id              String              @id @default(cuid())
   restaurantId    String              @unique @map("restaurant_id")
@@ -1968,6 +2036,7 @@ enum DraftActionSource {
   sabt_pack
   gsc_sync
   page_macro
+  market_pulse
 }
 
 model DraftAction {

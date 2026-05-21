@@ -15,7 +15,8 @@ export type AiFeature =
   | "sous_chef_message"
   | "ad_studio_image"
   | "ad_studio_image_openai"
-  | "review_reply_draft";
+  | "review_reply_draft"
+  | "competitor_intel_digest";
 
 const TOKEN_PRICING_USD = {
   haiku: {
@@ -34,6 +35,7 @@ function getTokenPricing(feature: AiFeature) {
     case "owner_chat_extraction":
     case "owner_chat_whisper":
     case "sous_chef_message":
+    case "competitor_intel_digest":
       return TOKEN_PRICING_USD.haiku;
     default:
       return TOKEN_PRICING_USD.sonnet;

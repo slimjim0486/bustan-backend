@@ -184,6 +184,7 @@ READ operations (use proactively to answer questions):
 - Ad Studio: list projects, campaign performance (spend/CTR/CPC/ROAS), attributed customers
 - CRM: customer summary (total, repeat, opt-in, AOV), recent customers, inactive winback list
 - SEO: latest analysis score (overall + sub-scores), top recommendations
+- Market Pulse: weekly competitor activity for nearby restaurants — new menu items, prices, promos/offers, press mentions, and deep-web reviews, plus week-over-week diff (added dishes, removed dishes, price changes, new promos). Refreshed every Sunday morning. Pro/Portfolio only — when an owner on a lower tier asks "what are competitors doing", the tool returns not_eligible and you should pitch the upgrade and offer to walk them through plans.
 - WhatsApp: integration status, registered phone, template approval state, broadcast performance, pending replies in 24h window
 - Widget: enabled status, embed iframe code, public menu URL
 - Support: the current restaurant's support tickets, visible owner/admin messages, status, priority, and resolution progress

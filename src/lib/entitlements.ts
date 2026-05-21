@@ -54,6 +54,14 @@ export interface PlanEntitlements {
   // per week — orchestrator force-reuses menu photos beyond this ceiling.
   sabtPackEnabled: boolean;
   sabtPackMaxCostUsdPerWeek: number;
+  // Market Pulse / Competitor Intelligence — weekly Exa-powered pull of
+  // nearby competitor menu/promo/press/review activity, surfaced via Sous
+  // Chef. Pro/Portfolio only. Cap bounds how many competitors we fetch per
+  // restaurant per week (each competitor ~$0.035 of Exa spend) — combined
+  // with the per-restaurant monthly USD cap this is the budget guardrail.
+  competitorIntelligenceEnabled: boolean;
+  competitorIntelMaxCompetitors: number;
+  competitorIntelManualRefreshesPerWeek: number;
 }
 
 const PLAN_ENTITLEMENTS: Record<
@@ -101,6 +109,9 @@ const PLAN_ENTITLEMENTS: Record<
     gscDashboardEnabled: false,
     sabtPackEnabled: false,
     sabtPackMaxCostUsdPerWeek: 0,
+    competitorIntelligenceEnabled: false,
+    competitorIntelMaxCompetitors: 0,
+    competitorIntelManualRefreshesPerWeek: 0,
   },
   pro: {
     menuItemLimit: null,
@@ -143,6 +154,9 @@ const PLAN_ENTITLEMENTS: Record<
     gscDashboardEnabled: true,
     sabtPackEnabled: true,
     sabtPackMaxCostUsdPerWeek: 1.0,
+    competitorIntelligenceEnabled: true,
+    competitorIntelMaxCompetitors: 5,
+    competitorIntelManualRefreshesPerWeek: 1,
   },
   portfolio: {
     menuItemLimit: null,
@@ -185,6 +199,9 @@ const PLAN_ENTITLEMENTS: Record<
     gscDashboardEnabled: true,
     sabtPackEnabled: true,
     sabtPackMaxCostUsdPerWeek: 1.0,
+    competitorIntelligenceEnabled: true,
+    competitorIntelMaxCompetitors: 10,
+    competitorIntelManualRefreshesPerWeek: 4,
   },
 };
 
@@ -231,6 +248,9 @@ const DRAFT_ENTITLEMENTS: PlanEntitlements = {
   gscDashboardEnabled: false,
   sabtPackEnabled: false,
   sabtPackMaxCostUsdPerWeek: 0,
+  competitorIntelligenceEnabled: false,
+  competitorIntelMaxCompetitors: 0,
+  competitorIntelManualRefreshesPerWeek: 0,
 };
 
 type RestaurantPlanSource =
@@ -304,6 +324,10 @@ export function getAdStudioUpgradeMessage() {
 
 export function getSabtPackUpgradeMessage() {
   return "Sabt Pack delivers 7 ready-to-publish posts every Sunday morning. Available on Pro and Portfolio.";
+}
+
+export function getCompetitorIntelUpgradeMessage() {
+  return "Market Pulse tracks competitors near you every week — menus, promos, press mentions, and review activity. Available on Pro and Portfolio.";
 }
 
 export function getPlanEntitlements(plan: SubscriptionPlan): PlanEntitlements {

@@ -21,10 +21,12 @@ import { startOwnerWhisperWorker } from "@/queue/owner-whisper";
 import { startGscSyncWorker } from "@/queue/gsc-sync";
 import { startSabtPackWorker } from "@/queue/sabt-pack";
 import { startEventStagerWorker } from "@/queue/event-stager";
+import { startCompetitorIntelWorker } from "@/queue/competitor-intel";
 import { startCoworkerDailyBriefWorker } from "@/queue/coworker-daily-brief";
 import { startDraftShipWorker } from "@/queue/draft-ship";
 import { adStudioRoute, adStudioPublicRoute } from "@/routes/ad-studio";
 import { sabtPackRoute, sabtPackAdminRoute } from "@/routes/sabt-pack";
+import { marketPulseRoute } from "@/routes/market-pulse";
 import { adminRoute } from "@/routes/admin";
 import { analyticsRoute } from "@/routes/analytics";
 import { auditRoute } from "@/routes/audit";
@@ -107,6 +109,7 @@ app.route("/api/ad-studio-public", adStudioPublicRoute);
 app.route("/api/ad-studio", adStudioRoute);
 app.route("/api/sabt-pack", sabtPackRoute);
 app.route("/api/admin/sabt-pack", sabtPackAdminRoute);
+app.route("/api/market-pulse", marketPulseRoute);
 app.route("/api/coworker", coworkerRoute);
 app.route("/api/admin/coworker", coworkerAdminRoute);
 app.route("/api/webhooks", coworkerWebhooksRoute);
@@ -201,6 +204,14 @@ startEventStagerWorker()
   })
   .catch((error) => {
     console.error("pg-boss event-stager worker failed to start", error);
+  });
+
+startCompetitorIntelWorker()
+  .then(() => {
+    console.log("pg-boss competitor-intel worker started");
+  })
+  .catch((error) => {
+    console.error("pg-boss competitor-intel worker failed to start", error);
   });
 
 startCoworkerDailyBriefWorker()
