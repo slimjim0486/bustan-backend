@@ -21,6 +21,9 @@ export interface AdStudioBrief {
   primaryDishImageUrl?: string | null;
   primaryDishCurrency?: string;
   brandVoice?: string;
+  // Slideshow-only: ordered list of dish IDs owner picked for frames.
+  // Empty/omitted means full auto-pick. Static projects ignore this.
+  featuredDishIds?: string[];
 }
 
 export interface RestaurantBrandContext {

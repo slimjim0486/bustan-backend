@@ -54,6 +54,11 @@ export const briefInputSchema = z
     primaryDishId: z.string().cuid().optional(),
     brandVoice: safeFreeText(500).optional(),
     creativeFormat: z.enum(CREATIVE_FORMATS).optional().default("static_multi"),
+    // Slideshow-only: ordered list of menu item IDs the owner explicitly
+    // picked for the slideshow frames. Frame 1 = index 0, frame 2 = index 1,
+    // etc. Up to SLIDESHOW_FRAME_COUNT (5). Empty / omitted = full auto-pick.
+    // Static projects ignore this field.
+    featuredDishIds: z.array(z.string().cuid()).max(5).optional(),
     // Slideshow-only: ISO YYYY-MM-DD date the owner plans to post this. The
     // route writes it onto AdProject.startsOn so the dashboard can surface a
     // "planned for today" reminder. Static projects ignore this field.
@@ -113,6 +118,7 @@ export async function hydrateBrief(input: BriefInput): Promise<{
     primaryDishImageUrl: primaryDish?.imageUrl,
     primaryDishCurrency: primaryDish?.currency,
     brandVoice: input.brandVoice,
+    featuredDishIds: input.featuredDishIds,
   };
 
   const brand: RestaurantBrandContext = {

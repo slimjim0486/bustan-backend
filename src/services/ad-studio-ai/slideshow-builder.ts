@@ -102,9 +102,20 @@ export async function runSlideshowBuilder(
 ): Promise<SlideshowBuilderResult> {
   const totals: UsageTotals = { tokensIn: 0, tokensOut: 0, costUsd: 0 };
 
+  // Owner-picked dishes win frame ordering; primaryDishId is a fallback for
+  // legacy briefs that only had the single-dish picker. Empty array means
+  // full auto-pick.
+  const ownerPicked = args.brief.featuredDishIds ?? [];
+  const preferDishIds =
+    ownerPicked.length > 0
+      ? ownerPicked
+      : args.brief.primaryDishId
+        ? [args.brief.primaryDishId]
+        : [];
+
   const dishIds = await pickSlideshowDishes({
     restaurantId: args.brief.restaurantId,
-    preferDishId: args.brief.primaryDishId,
+    preferDishIds,
   });
 
   if (dishIds.length < SLIDESHOW_FRAME_COUNT) {

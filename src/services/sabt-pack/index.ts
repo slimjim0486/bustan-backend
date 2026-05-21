@@ -343,7 +343,7 @@ async function runSlot(args: {
     try {
       const dishIds = await pickSlideshowDishes({
         restaurantId: args.restaurantId,
-        preferDishId: args.slot.primaryDishId,
+        preferDishIds: args.slot.primaryDishId ? [args.slot.primaryDishId] : [],
       });
       if (dishIds.length < SLIDESHOW_FRAME_COUNT) {
         reason = reason ?? `slideshow_only_${dishIds.length}_ready_dishes`;

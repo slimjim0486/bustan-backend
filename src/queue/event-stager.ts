@@ -224,6 +224,34 @@ async function processRunJob(restaurantId: string) {
 
 /** Idempotent stage. Returns the new projectId if a draft was created, or
  *  null if a draft already exists for this (restaurant, moment, year). */
+/** Moments where a TikTok Photo Mode slideshow tends to outperform a paid
+ *  static set. Food-focused, festive, and cultural moments are visual-led
+ *  and reward the slow-scroll save mechanic; weather/delivery/shopping-
+ *  festival moments are paid-spend pulses and stay static. */
+function isSlideshowFriendlyMoment(moment: CalendarMoment): boolean {
+  if (moment.id === "ramadan") return true;
+  if (moment.id.startsWith("eid_")) return true;
+  if (moment.kind === "food_focused") return true;
+  if (moment.kind === "cultural_global") return true;
+  if (moment.kind === "national_day") return true;
+  return false;
+}
+
+/** Count this restaurant's photographed menu items. Mirrors the frontend
+ *  format-picker gate so the event-stager only presets slideshow when the
+ *  worker can actually compose 5 frames. */
+async function countPhotographedDishes(restaurantId: string): Promise<number> {
+  return prisma.menuItem.count({
+    where: {
+      restaurantId,
+      isAvailable: true,
+      OR: [{ imageStatus: "ready" }, { imageStatus: "generated" }],
+    },
+  });
+}
+
+const SLIDESHOW_MIN_PHOTOS = 5;
+
 async function stageMomentForRestaurant(args: {
   restaurantId: string;
   restaurantCountry: CountryCode;
@@ -262,6 +290,19 @@ async function stageMomentForRestaurant(args: {
   const fallbackPlatforms = Object.keys(campaign.platformMix);
   const targetPlatforms = (platformsFromMoment.length > 0 ? platformsFromMoment : fallbackPlatforms).slice(0, 4);
 
+  // Preset slideshow format for visual-led moments when the restaurant has
+  // enough photographed dishes for the worker to compose 5 frames. This
+  // means the owner who clicks "Review & generate" on Eid / Ramadan / a
+  // food festival lands on a draft that's already pointed at the right
+  // creative format — no toggle hunting.
+  let creativeFormat: "static_multi" | "slideshow_tiktok" = "static_multi";
+  if (isSlideshowFriendlyMoment(moment)) {
+    const photoCount = await countPhotographedDishes(restaurantId);
+    if (photoCount >= SLIDESHOW_MIN_PHOTOS) {
+      creativeFormat = "slideshow_tiktok";
+    }
+  }
+
   const briefJson: Prisma.InputJsonValue = {
     restaurantId,
     name: `${moment.name} ${year}`,
@@ -273,6 +314,7 @@ async function stageMomentForRestaurant(args: {
     budgetTier,
     budgetAed,
     brandVoice: buildBrandVoiceFromMoment(moment),
+    creativeFormat,
     autoStaged: true,
     sourceMomentId: moment.id,
     sourceMomentYear: year,
