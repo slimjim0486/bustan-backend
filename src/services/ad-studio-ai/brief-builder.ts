@@ -54,6 +54,10 @@ export const briefInputSchema = z
     primaryDishId: z.string().cuid().optional(),
     brandVoice: safeFreeText(500).optional(),
     creativeFormat: z.enum(CREATIVE_FORMATS).optional().default("static_multi"),
+    // Slideshow-only: ISO YYYY-MM-DD date the owner plans to post this. The
+    // route writes it onto AdProject.startsOn so the dashboard can surface a
+    // "planned for today" reminder. Static projects ignore this field.
+    plannedPostDate: z.string().date().optional(),
   })
   .strict();
 

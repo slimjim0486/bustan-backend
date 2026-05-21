@@ -317,7 +317,17 @@ adStudioRoute.post("/projects", async (c) => {
       }
     }
 
-    validateBudgetTierAgainstCampaign(parsed);
+    // Slideshow is organic and has no paid budget — owners aren't shown a
+    // budget input, so skip the per-campaign tier validation. Static-multi
+    // still enforces it.
+    if (parsed.creativeFormat !== "slideshow_tiktok") {
+      validateBudgetTierAgainstCampaign(parsed);
+    }
+
+    // Slideshow owners may pick a planned post date — store it on the
+    // existing startsOn column so the dashboard can show a "planned for
+    // today" reminder without adding new schema.
+    const startsOn = parsed.plannedPostDate ? new Date(parsed.plannedPostDate) : null;
 
     const project = await prisma.adProject.create({
       data: {
@@ -331,6 +341,7 @@ adStudioRoute.post("/projects", async (c) => {
         budgetTier: parsed.budgetTier,
         budgetAed: parsed.budgetAed,
         durationWeeks: parsed.durationWeeks ?? null,
+        startsOn,
         primaryDishId: parsed.primaryDishId ?? null,
         brandVoice: parsed.brandVoice ?? null,
         status: "draft",
