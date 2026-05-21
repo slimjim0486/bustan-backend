@@ -130,14 +130,20 @@ function buildSystemPrompt(): string {
     "## Hard rules — every output must obey these:",
     "1. Exactly 5 frames in this order: (1) hook, (2) reveal, (3) detail, (4) experience, (5) CTA.",
     "2. Each frame headline is ≤ 32 characters (counts spaces). This is platform-imposed — longer text gets cropped.",
-    "3. Frames 1–4 NEVER include the CTA, price, or hard sell. Save selling for frame 5.",
-    "4. Frame 1 must STOP THE SCROLL. Use curiosity (\"POV:\", \"Tell me you serve X without telling me\", \"Wait until you see frame 3\"), pattern interrupt, or a hyper-specific local anchor (\"Marina dinner\", \"JLT lunch\", \"Iftar in Sharjah\"). Never a generic adjective.",
-    "5. One emotion / one idea per frame. Slideshows are not caption ads.",
-    "6. Headlines must be specific to THIS restaurant and the actual dishes provided — never generic restaurant copy.",
-    "7. No emoji on the on-image headlines (they wrap badly in the SVG band). Emoji in the post body is fine.",
-    "8. No hashtags inside frame headlines. The post body may include 2-3 well-targeted hashtags.",
-    "9. Respect the operator's brand voice when provided — it overrides any \"slideshow trend\" default tone.",
-    "10. Frame 5 (CTA) anchors the action — neighborhood, ordering channel, or booking URL. Keep it warm, not pushy.",
+    "3. **The `headline`, `postBody`, and `ctaText` fields are ALWAYS written in English (Latin script).** Never write Arabic, Urdu, Hindi, or any non-Latin script in these fields. The Arabic mirrors live in the `headlineAr`, `postBodyAr`, and `ctaTextAr` fields (separate fields, only filled when bilingual output is requested).",
+    "4. Frames 1–4 NEVER include the CTA, price, or hard sell. Save selling for frame 5.",
+    "5. Frame 1 must STOP THE SCROLL. Use curiosity (\"POV:\", \"Tell me you serve X without telling me\", \"Wait until you see frame 3\"), pattern interrupt, or a hyper-specific local anchor (\"Marina dinner\", \"JLT lunch\", \"Iftar in Sharjah\"). Never a generic adjective.",
+    "6. One emotion / one idea per frame. Slideshows are not caption ads.",
+    "7. Headlines must be specific to THIS restaurant and the actual dishes provided — never generic restaurant copy.",
+    "8. No emoji on the on-image headlines (they wrap badly in the SVG band). Emoji in the post body is fine.",
+    "9. No hashtags inside frame headlines. The post body may include 2-3 well-targeted hashtags.",
+    "10. Respect the operator's brand voice when provided — it overrides any \"slideshow trend\" default tone.",
+    "11. Frame 5 (CTA) anchors the action — neighborhood, ordering channel, or booking URL. Keep it warm, not pushy.",
+    "",
+    "## Post body formatting (so it reads cleanly when copy-pasted to TikTok/IG):",
+    "- Write 1–2 short paragraphs. Separate paragraphs with a SINGLE blank line (i.e. two \\n chars).",
+    "- After the body paragraphs, add ONE blank line, then the hashtags on their own line (2–3 hashtags, space-separated, no commas).",
+    "- Do not glue the hashtags to the last sentence — they must be on their own line.",
     "",
     "## Restaurant slideshow best practices (MENA, 2026):",
     "- TikTok Photo Mode is ~38% of MENA For You feed; slideshows have higher save rates than Reels.",
@@ -170,7 +176,9 @@ function buildUserPrompt(args: GenerateSlideshowCaptionsArgs): string {
     `## Brief`,
     `Campaign type: ${brief.campaignType}. Funnel goal: ${brief.goal}.`,
     `Countries: ${brief.countries.join(", ")}.`,
-    `Bilingual output requested: ${bilingual ? "YES — write headlineAr, postBodyAr, ctaTextAr too" : "NO — English only"}.`,
+    bilingual
+      ? `Bilingual output: YES. The English fields (\`headline\`, \`postBody\`, \`ctaText\`) MUST be Latin/English. Fill the Arabic mirrors (\`headlineAr\`, \`postBodyAr\`, \`ctaTextAr\`) with the Arabic equivalents.`
+      : `Bilingual output: NO. All fields are English (Latin script) only. Do NOT write Arabic in any field. Leave the *Ar fields blank.`,
     "",
     brief.brandVoice
       ? `## Brand voice (HARD constraint — overrides any default slideshow tone)\n${userDataBlock("voice", brief.brandVoice)}`
@@ -261,19 +269,76 @@ export async function generateSlideshowCaptions(
     );
   }
 
-  // Belt-and-suspenders: enforce the 32-char cap server-side in case the
-  // tool schema slips. wrapHeadline in slideshow-compositor accepts longer
-  // text but visually crops; better to trim here than ship a clipped frame.
+  // Belt-and-suspenders post-processing.
+  // - Headlines: enforce the 32-char cap (the SVG band visually crops longer
+  //   text) AND strip any non-Latin characters that may have slipped past the
+  //   "headline is always English" prompt rule. The render container has no
+  //   Arabic/CJK font installed; without scrubbing, those glyphs render as
+  //   tofu boxes on the slideshow image.
+  // - postBody / ctaText: same Latin-only guard applies, since they're shown
+  //   verbatim to the owner and they expect to copy-paste English copy from
+  //   the English fields.
+  // - postBody: also normalize whitespace so the frontend whitespace-pre-line
+  //   renderer has clean paragraph breaks + hashtags on their own line.
   const frames: SlideshowFrameCaption[] = raw.frames.map((f) => ({
-    headline: (f.headline ?? "").trim().slice(0, 32),
+    headline: scrubToLatin((f.headline ?? "").trim()).slice(0, 32),
     headlineAr: f.headlineAr ? f.headlineAr.trim().slice(0, 32) : undefined,
   }));
 
   return {
     frames,
-    postBody: (raw.postBody ?? "").trim(),
+    postBody: normalizePostBody(scrubToLatin((raw.postBody ?? "").trim())),
     postBodyAr: raw.postBodyAr ? raw.postBodyAr.trim() : undefined,
-    ctaText: (raw.ctaText ?? "Order on WhatsApp").trim().slice(0, 60),
+    ctaText: scrubToLatin((raw.ctaText ?? "Order on WhatsApp").trim()).slice(0, 60),
     ctaTextAr: raw.ctaTextAr ? raw.ctaTextAr.trim().slice(0, 60) : undefined,
   };
+}
+
+/**
+ * Drop characters outside the Basic Latin + Latin-1 Supplement + General
+ * Punctuation Unicode ranges. Keeps ASCII letters, digits, basic punctuation,
+ * accented Latin (é, ñ, etc.), em-dash and ellipsis. Drops Arabic, CJK,
+ * Hebrew, Devanagari, emoji — anything the on-image SVG font can't render.
+ *
+ * Then collapses runs of whitespace introduced by the drops.
+ */
+export function scrubToLatin(value: string): string {
+  // Keep: ASCII printable (0x20-0x7E), Latin-1 Supplement letters (0xC0-0xFF),
+  // common General Punctuation (en/em dash, ellipsis), and standard line
+  // breaks (we strip newlines from headlines via the 32-char trim; postBody
+  // newlines survive because \n is in the kept range below via [\n] alt).
+  const kept = value.replace(
+    // eslint-disable-next-line no-control-regex
+    /[^ -~ -ÿ‐-‧‰-⁞\n]/g,
+    ""
+  );
+  // Collapse multiple spaces but preserve newlines for postBody formatting.
+  return kept.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").trim();
+}
+
+/**
+ * Normalize the post-body so the frontend's whitespace-pre-line renderer
+ * shows clean paragraphs and hashtags on their own line.
+ *
+ * Guarantees:
+ *  - At most one blank line between paragraphs (no triple-newlines).
+ *  - Hashtag block (`#foo #bar #baz`) is moved to its own paragraph with a
+ *    blank line above it, even if Claude inlined it after the last sentence.
+ */
+export function normalizePostBody(value: string): string {
+  if (!value) return "";
+  // Collapse any run of 3+ newlines to exactly two (= one blank line).
+  let out = value.replace(/\n{3,}/g, "\n\n");
+  // Find the first hashtag and split the body around it. We expect hashtags
+  // to appear contiguously at the end; if Claude inlined them, we move them.
+  const hashtagBlockMatch = out.match(/((?:#[^\s#]+\s*)+)\s*$/);
+  if (hashtagBlockMatch) {
+    const block = hashtagBlockMatch[1].trim();
+    const beforeRaw = out.slice(0, hashtagBlockMatch.index).trim();
+    // Re-space the hashtags so multiple consecutive ones are separated by
+    // a single space, in case Claude wrote them with mixed whitespace.
+    const tidyHashtags = block.replace(/\s+/g, " ").trim();
+    out = `${beforeRaw}\n\n${tidyHashtags}`;
+  }
+  return out.trim();
 }
