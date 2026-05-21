@@ -258,9 +258,17 @@ async function stageMomentForRestaurant(args: {
   planned: PlannedStaging;
 }): Promise<string | null> {
   const { restaurantId, restaurantCountry, planned } = args;
-  const { moment, year, fromDate } = planned;
+  const { moment, year, fromDate, toDate } = planned;
 
-  const campaignType = pickCampaignTypeForMoment(moment);
+  // Pass the occurrence + now so the mapping can route Eid in-event to the
+  // brunch-hero archetype and Eid in-prep to pre_eid_lto / eid_al_adha_lamb_hero.
+  const campaignType = pickCampaignTypeForMoment(moment, {
+    occurrence: {
+      from: fromDate.toISOString().slice(0, 10),
+      to: toDate.toISOString().slice(0, 10),
+    },
+    now: new Date(),
+  });
   // Defensive: confirm the picked type is actually in the KB. If KB drift
   // ever removes a type the worker references, fail gracefully (skip).
   const campaign = campaignArchetypes.find((c) => c.id === campaignType);

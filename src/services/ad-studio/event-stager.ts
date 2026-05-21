@@ -107,19 +107,69 @@ export function inferCountryFromLocation(location: string | null | undefined): C
 // Brief seeding — translates a moment into AdProject fields
 // =============================================================================
 
+/** Returns the phase of the moment relative to `now`:
+ *  - "prep"  → moment hasn't started yet (now < fromIso). Use pre-event creative.
+ *  - "event" → moment is in progress (fromIso ≤ now ≤ toIso). Use during-event creative.
+ *  - "post"  → moment has ended (now > toIso). Used by the +14d tail in the planner.
+ *
+ *  Date-only granularity is fine — moments are day-scoped, and the cron runs once
+ *  per day. Pure function so the orchestrator and tests can both call it. */
+export function phaseForMoment(
+  moment: CalendarMoment,
+  occurrence: { from: string; to: string },
+  now: Date
+): "prep" | "event" | "post" {
+  const fromMs = new Date(occurrence.from).getTime();
+  const toMs = new Date(occurrence.to).getTime();
+  const nowMs = now.getTime();
+  if (nowMs < fromMs) return "prep";
+  // One full day grace on the end so a moment that "ends today" is still treated
+  // as the event itself, not post.
+  if (nowMs <= toMs + 24 * 60 * 60 * 1000) return "event";
+  return "post";
+}
+
 /** Map a calendar moment to the KB campaign type that best fits it.
  *  Mirrors the frontend pickCampaignTypeForMoment so a manually-drafted
  *  campaign (clicking "Draft this campaign" on the calendar page) and an
- *  auto-staged campaign land on the same campaign type. */
-export function pickCampaignTypeForMoment(moment: CalendarMoment): string {
+ *  auto-staged campaign land on the same campaign type.
+ *
+ *  When `occurrence` + `now` are provided, Eid moments split:
+ *    - prep window → pre_eid_lto (sells the menu drop ahead of Eid)
+ *    - during Eid  → eid_brunch_hero (covers the Day 1–3 brunch sellout window)
+ *    Eid al-Adha additionally routes to eid_al_adha_lamb_hero in prep to
+ *    bias the brief toward the sacrifice / lamb hero. */
+export function pickCampaignTypeForMoment(
+  moment: CalendarMoment,
+  context?: { occurrence?: { from: string; to: string }; now?: Date }
+): string {
   if (moment.id === "ramadan") return "iftar_fill_house";
-  if (moment.id.startsWith("eid_")) return "weekend_brunch_hero";
+
+  if (moment.id.startsWith("eid_")) {
+    const phase =
+      context?.occurrence && context?.now
+        ? phaseForMoment(moment, context.occurrence, context.now)
+        : "prep"; // Conservative default — the event-stager hits Eid almost always in prep
+    if (phase === "event") return "eid_brunch_hero";
+    // Adha-specific prep route — lamb hero anchors the creative.
+    if (moment.id === "eid_al_adha") return "eid_al_adha_lamb_hero";
+    return "pre_eid_lto";
+  }
+
+  if (moment.kind === "national_day") return "national_day_pride";
+  if (moment.id === "summer_slump_uae_ksa") return "summer_slowdown_combat";
+  if (moment.id === "back_to_school") return "back_to_school_family";
+  if (moment.id === "dubai_restaurant_week") return "restaurant_week_participant";
+
   if (moment.kind === "shopping_festival") return "lto_menu_drop";
-  if (moment.kind === "food_focused") return "lto_menu_drop";
+  if (moment.kind === "food_focused") return "restaurant_week_participant";
   if (moment.kind === "weather_seasonal") return "weather_trigger_delivery";
   if (moment.kind === "tourism_event") return "premium_brand_defense";
-  if (moment.kind === "national_day") return "lto_menu_drop";
-  if (moment.kind === "cultural_global") return "weekend_brunch_hero";
+  if (moment.kind === "cultural_global") {
+    // Valentine's day is the textbook date-night moment.
+    if (moment.id === "valentines_day") return "dinner_for_two_date_night";
+    return "weekend_brunch_hero";
+  }
   return "lto_menu_drop";
 }
 

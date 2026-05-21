@@ -244,6 +244,24 @@ export type CampaignType =
   | "catering_corporate_lead_gen"
   | "premium_brand_defense"
   | "multi_location_chain"
+  // Festival- and season-specific archetypes (added 2026-05-21 to fix the
+  // "Eid mapped to weekend_brunch_hero" gap — Eid prep, Eid event itself,
+  // Summer Slump endurance play, National Day pride, etc.).
+  | "pre_eid_lto"
+  | "eid_brunch_hero"
+  | "eid_al_adha_lamb_hero"
+  | "summer_slowdown_combat"
+  | "national_day_pride"
+  | "back_to_school_family"
+  | "restaurant_week_participant"
+  | "dinner_for_two_date_night"
+  | "ladies_night_thursday"
+  // Free-form sentinel — owner described a campaign that doesn't fit any KB
+  // archetype. Orchestrator branches on this to a synthesis prompt rather
+  // than reading KB campaign attributes. Has no KB archetype entry; rows
+  // in AdProject with campaignType="freeform" carry the owner's brief in
+  // briefJson.campaignBrief.
+  | "freeform"
   // Sabt Pack — synthetic campaign type for weekly auto-generated 7-post bundles.
   // Has no KB archetype entry (it's not a real campaign archetype owners can
   // choose in the wizard); only Sabt Pack rows in AdProject use this value.

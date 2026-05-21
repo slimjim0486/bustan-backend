@@ -55,7 +55,8 @@ export interface SlideshowBuilderResult {
 }
 
 /** Resolve the default archetype for a campaign type by reading the KB.
- *  Falls back to "cheese_pull_money_shot" — the most universal food hero. */
+ *  Falls back to "cheese_pull_money_shot" — the most universal food hero —
+ *  which also covers the "freeform" campaign type (no KB entry by design). */
 function defaultArchetypeForCampaign(campaignType: string): string {
   const campaign = campaignArchetypes.find((c) => c.id === campaignType);
   return campaign?.creativeMix?.[0]?.archetypeId ?? "cheese_pull_money_shot";

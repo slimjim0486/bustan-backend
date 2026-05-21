@@ -318,9 +318,13 @@ adStudioRoute.post("/projects", async (c) => {
     }
 
     // Slideshow is organic and has no paid budget — owners aren't shown a
-    // budget input, so skip the per-campaign tier validation. Static-multi
-    // still enforces it.
-    if (parsed.creativeFormat !== "slideshow_tiktok") {
+    // budget input, so skip the per-campaign tier validation. Free-form
+    // campaigns have no KB archetype to validate against, so skip there too.
+    // Static-multi non-freeform still enforces it.
+    if (
+      parsed.creativeFormat !== "slideshow_tiktok" &&
+      parsed.campaignType !== "freeform"
+    ) {
       validateBudgetTierAgainstCampaign(parsed);
     }
 

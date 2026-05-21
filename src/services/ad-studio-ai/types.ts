@@ -24,6 +24,10 @@ export interface AdStudioBrief {
   // Slideshow-only: ordered list of dish IDs owner picked for frames.
   // Empty/omitted means full auto-pick. Static projects ignore this.
   featuredDishIds?: string[];
+  // Owner-supplied free-text description when campaignType === "freeform".
+  // The strategy pass hands this to Claude as the primary brief signal in
+  // place of a KB campaign archetype.
+  campaignBrief?: string;
 }
 
 export interface RestaurantBrandContext {

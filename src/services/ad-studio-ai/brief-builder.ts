@@ -36,14 +36,24 @@ const safeFreeText = (max: number) =>
     .max(max)
     .transform((v) => v.replace(/[\r\n<>{}]/g, " ").replace(/\s+/g, " ").trim());
 
+// "freeform" sentinel — owner described a campaign in their own words. The
+// orchestrator branches on this value to a synthesis prompt and skips the
+// campaign-tier budget validator since there's no KB campaign to validate
+// against.
+export const FREEFORM_CAMPAIGN_TYPE = "freeform";
+
 export const briefInputSchema = z
   .object({
     restaurantId: z.string().cuid(),
     name: safeFreeText(120).pipe(z.string().min(2)),
     campaignType: z.string().refine(
-      (v) => campaignArchetypes.some((c) => c.id === v),
-      { message: "Unknown campaign type — must be a KB CampaignType id" }
+      (v) => v === FREEFORM_CAMPAIGN_TYPE || campaignArchetypes.some((c) => c.id === v),
+      { message: "Unknown campaign type — must be a KB CampaignType id or 'freeform'" }
     ),
+    // Free-text description of the campaign when campaignType="freeform".
+    // Required-when-freeform is enforced by the .superRefine below — Zod's
+    // pure schema can't express cross-field conditional requireds.
+    campaignBrief: safeFreeText(500).optional(),
     goal: z.enum(["tofu", "mofu", "bofu", "retention"] as [FunnelStage, ...FunnelStage[]]),
     countries: z.array(z.enum(VALID_COUNTRY_CODES as [CountryCode, ...CountryCode[]])).min(1).max(4),
     cuisines: z.array(z.string().max(50)).min(1).max(4),
@@ -64,7 +74,19 @@ export const briefInputSchema = z
     // "planned for today" reminder. Static projects ignore this field.
     plannedPostDate: z.string().date().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((val, ctx) => {
+    if (val.campaignType === FREEFORM_CAMPAIGN_TYPE) {
+      const brief = (val.campaignBrief ?? "").trim();
+      if (brief.length < 10) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["campaignBrief"],
+          message: "Describe your campaign in at least 10 characters when picking the free-form option.",
+        });
+      }
+    }
+  });
 
 export type BriefInput = z.infer<typeof briefInputSchema>;
 
@@ -119,6 +141,7 @@ export async function hydrateBrief(input: BriefInput): Promise<{
     primaryDishCurrency: primaryDish?.currency,
     brandVoice: input.brandVoice,
     featuredDishIds: input.featuredDishIds,
+    campaignBrief: input.campaignBrief,
   };
 
   const brand: RestaurantBrandContext = {

@@ -76,10 +76,11 @@ export async function runStrategyPass(args: {
     throw new ApiError("ANTHROPIC_API_KEY is not configured for the Ad Studio", 503);
   }
 
+  const freeform = args.brief.campaignType === "freeform";
   const response = await client.messages.create({
     model: STRATEGY_MODEL,
     max_tokens: 1500,
-    system: buildStrategySystemPrompt(),
+    system: buildStrategySystemPrompt({ freeform }),
     tools: [STRATEGY_TOOL_SCHEMA as Anthropic.Tool],
     tool_choice: { type: "tool", name: STRATEGY_TOOL_NAME },
     messages: [
