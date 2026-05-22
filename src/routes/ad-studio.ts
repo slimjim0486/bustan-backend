@@ -369,6 +369,68 @@ adStudioRoute.get("/projects/:id", async (c) => {
   }
 });
 
+// PATCH a draft project's editable fields. Today this is just `primaryDishId`
+// — the picker on the draft page lets the owner swap the auto-staged dish
+// before clicking Generate. We sync into briefJson too because the generator
+// re-hydrates the brief from that snapshot, so the two must agree.
+const projectPatchSchema = z.object({
+  primaryDishId: z.string().cuid().nullable(),
+});
+
+adStudioRoute.patch("/projects/:id", async (c) => {
+  try {
+    const auth = c.var.auth;
+    const project = await loadProjectForUser(c.req.param("id"), auth.clerkId);
+    ensureAdStudioEnabled(project.restaurant);
+
+    // Allow edits while the project hasn't successfully shipped creative yet.
+    // `failed` is the common case: the owner wants to swap the dish that caused
+    // image-gen to fall over and click Retry. Block on `ready`/`exported`/
+    // `generating`/`archived` so we never silently mutate a live brief mid-flight.
+    if (project.status !== "draft" && project.status !== "failed") {
+      throw new ApiError("Only draft or failed projects can be edited", 409);
+    }
+
+    const body = await c.req.json();
+    const parsed = projectPatchSchema.parse(body);
+
+    // Validate the dish belongs to this restaurant — tenant isolation.
+    // Null clears the selection.
+    if (parsed.primaryDishId) {
+      const dish = await prisma.menuItem.findFirst({
+        where: { id: parsed.primaryDishId, restaurantId: project.restaurantId },
+        select: { id: true },
+      });
+      if (!dish) {
+        throw new ApiError("That dish doesn't belong to this restaurant", 400);
+      }
+    }
+
+    // Keep briefJson.primaryDishId in sync — the generator re-builds the
+    // brief from the persisted snapshot, not from project columns.
+    const currentBrief =
+      project.briefJson && typeof project.briefJson === "object" && !Array.isArray(project.briefJson)
+        ? (project.briefJson as Record<string, unknown>)
+        : {};
+    const updatedBrief = {
+      ...currentBrief,
+      primaryDishId: parsed.primaryDishId,
+    };
+
+    const updated = await prisma.adProject.update({
+      where: { id: project.id },
+      data: {
+        primaryDishId: parsed.primaryDishId,
+        briefJson: updatedBrief as Prisma.InputJsonValue,
+      },
+    });
+
+    return c.json({ project: updated });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
 adStudioRoute.delete("/projects/:id", async (c) => {
   try {
     const auth = c.var.auth;

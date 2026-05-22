@@ -25,6 +25,7 @@ import { sendLifecycleEmail } from "@/services/email";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { campaignArchetypes } from "@/services/ad-studio/campaigns";
 import { ensureSystemDraftForAdProject } from "@/services/draft-actions";
+import { pickHeroDishForRestaurant } from "@/services/ad-studio-ai/hero-dish-picker";
 import { DraftActionSource } from "@prisma/client";
 import type { CalendarMoment, CountryCode } from "@/services/ad-studio/types";
 import {
@@ -388,6 +389,13 @@ async function stageMomentForRestaurant(args: {
     }
   }
 
+  // Auto-pick a sensible default hero dish so the owner who clicks
+  // "Generate" lands on a working brief instead of 6 failed variants. The
+  // picker prefers owner-uploaded photos (free, real, on-brand) and falls
+  // back to any available menu item — the owner can swap it from the draft
+  // page before generation runs.
+  const heroDish = await pickHeroDishForRestaurant(restaurantId);
+
   const briefJson: Prisma.InputJsonValue = {
     restaurantId,
     name: `${moment.name} ${year}`,
@@ -403,6 +411,7 @@ async function stageMomentForRestaurant(args: {
     autoStaged: true,
     sourceMomentId: moment.id,
     sourceMomentYear: year,
+    primaryDishId: heroDish?.id ?? null,
   };
 
   try {
@@ -417,7 +426,7 @@ async function stageMomentForRestaurant(args: {
         targetPlatforms,
         budgetTier,
         budgetAed,
-        primaryDishId: null,
+        primaryDishId: heroDish?.id ?? null,
         brandVoice: buildBrandVoiceFromMoment(moment),
         status: "draft",
         briefJson,

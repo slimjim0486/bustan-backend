@@ -16,6 +16,7 @@ import { prisma } from "@/lib/prisma";
 import { generateDishImage } from "@/services/google-image";
 import { generateOpenAiImage } from "@/services/openai-image";
 import { uploadBuffer } from "@/services/r2";
+import { pickHeroDishForRestaurant } from "./hero-dish-picker";
 import type { ImageGenResult, ImageProvider } from "./types";
 
 interface ImageGenInput {
@@ -38,17 +39,34 @@ export async function generateHeroImage(input: ImageGenInput): Promise<ImageGenR
     if (reused) return reused;
   }
 
-  // Step 2: Fall back to AI generation.
-  if (!input.primaryDishName) {
-    throw new ApiError(
-      "Cannot generate AI hero image without a featured dish name. Pick a dish from the menu, or upload a photo to the dish first.",
-      400
-    );
+  // Step 2: Fall back to AI generation. If the brief never specified a dish
+  // (e.g. an auto-staged calendar campaign that the owner hasn't reviewed),
+  // pick one now so a single missing field doesn't take down every variant.
+  let dishName = input.primaryDishName;
+  let resolvedDishId = input.primaryDishId;
+  if (!dishName) {
+    const picked = await pickHeroDishForRestaurant(input.restaurantId);
+    if (!picked) {
+      throw new ApiError(
+        "Add at least one menu item before generating ad creative — Ad Studio needs a real dish to feature.",
+        400
+      );
+    }
+    dishName = picked.name;
+    resolvedDishId = picked.id;
+
+    // If the menu item has a real photo, prefer that over an AI render —
+    // mirrors Step 1 but for the fallback path. `reuseMenuItemImage` is the
+    // caller's diversity gate, so we only do this when reuse is allowed.
+    if (input.reuseMenuItemImage !== false) {
+      const reused = await tryReuseMenuItemImage(resolvedDishId, input.restaurantId);
+      if (reused) return reused;
+    }
   }
 
   return generateAiImage({
     restaurantId: input.restaurantId,
-    dishName: input.primaryDishName,
+    dishName,
     prompt: input.prompt,
     provider: input.provider ?? "gemini",
   });
