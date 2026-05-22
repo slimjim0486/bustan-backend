@@ -358,6 +358,8 @@ model Restaurant {
   coworkerMessages          CoworkerMessage[]
   draftActions              DraftAction[]
   gbpReviews                GbpReview[]
+  analyticsImports          AnalyticsImport[]
+  analyticsImportMetrics    AnalyticsImportMetric[]
 
   @@index([ownerId])
   @@index([operatorAccountId])
@@ -585,6 +587,49 @@ model PageView {
 
   @@index([restaurantId, createdAt])
   @@map("page_views")
+}
+
+model AnalyticsImport {
+  id               String    @id @default(cuid())
+  restaurantId     String    @map("restaurant_id")
+  source           String
+  status           String    @default("imported")
+  originalFileName String?   @map("original_file_name")
+  originalFileUrl  String?   @map("original_file_url")
+  contentType      String?   @map("content_type")
+  rowCount         Int       @default(0) @map("row_count")
+  metricCount      Int       @default(0) @map("metric_count")
+  startedOn        DateTime? @map("started_on") @db.Date
+  endedOn          DateTime? @map("ended_on") @db.Date
+  notes            String?
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  restaurant Restaurant              @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  metrics    AnalyticsImportMetric[]
+
+  @@index([restaurantId, createdAt])
+  @@map("analytics_imports")
+}
+
+model AnalyticsImportMetric {
+  id           String   @id @default(cuid())
+  importId     String   @map("import_id")
+  restaurantId String   @map("restaurant_id")
+  metricDate   DateTime @map("metric_date") @db.Date
+  metricType   String   @map("metric_type")
+  value        Decimal  @db.Decimal(14, 2)
+  unit         String   @default("count")
+  currency     String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  import     AnalyticsImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  restaurant Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, metricDate, metricType], name: "uniq_import_metric_per_day")
+  @@index([restaurantId, metricDate])
+  @@index([restaurantId, metricType])
+  @@map("analytics_import_metrics")
 }
 
 model BrandingClick {
