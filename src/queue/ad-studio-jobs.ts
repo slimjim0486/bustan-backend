@@ -280,8 +280,12 @@ async function processAdStudioJob(job: AdStudioWorkerJob) {
         brief,
         brand,
       });
-      await prisma.adProject.update({
-        where: { id: projectId },
+      // updateMany + where status=generating makes this a no-op if the owner
+      // cancelled mid-flight (status was flipped to failed by the cancel
+      // route). Without this guard, the worker would silently overwrite the
+      // cancel with `ready` and the cancelled creative would appear.
+      const flipped = await prisma.adProject.updateMany({
+        where: { id: projectId, status: "generating" },
         data: {
           status: "ready",
           generationPhase: null,
@@ -290,6 +294,11 @@ async function processAdStudioJob(job: AdStudioWorkerJob) {
           lastError: null,
         },
       });
+      if (flipped.count === 0) {
+        console.log(
+          `[ad-studio] slideshow result for ${projectId} discarded — project was cancelled or already completed.`
+        );
+      }
       await logAiUsage(
         project.restaurantId,
         "ad_studio_project",
@@ -314,6 +323,23 @@ async function processAdStudioJob(job: AdStudioWorkerJob) {
 
     // Persist creatives — per-variant hero image and per-variant safety flags.
     await prisma.$transaction(async (tx) => {
+      // Cancel guard: if the owner stopped this generation mid-flight, the
+      // project is already in `failed` state. Bail before writing creatives so
+      // a cancelled run can't leave stale variants attached. The final
+      // updateMany below uses the same `status=generating` filter as a
+      // belt-and-suspenders check in case the cancel arrives between this
+      // read and the final write.
+      const snapshot = await tx.adProject.findUnique({
+        where: { id: projectId },
+        select: { status: true },
+      });
+      if (snapshot?.status !== "generating") {
+        console.log(
+          `[ad-studio] static result for ${projectId} discarded — project was cancelled.`
+        );
+        return;
+      }
+
       for (const out of result.variants) {
         const v = out.copy;
         const status = out.hero ? "ready" : "failed"; // No image = degraded variant
@@ -365,8 +391,8 @@ async function processAdStudioJob(job: AdStudioWorkerJob) {
       }
 
       const anyImageReady = result.variants.some((v) => v.hero !== null);
-      await tx.adProject.update({
-        where: { id: projectId },
+      await tx.adProject.updateMany({
+        where: { id: projectId, status: "generating" },
         data: {
           status: anyImageReady ? "ready" : "failed",
           generationPhase: null,
@@ -392,8 +418,10 @@ async function processAdStudioJob(job: AdStudioWorkerJob) {
     const message =
       isApiError(error) ? error.message : error instanceof Error ? error.message : "Unknown error";
 
-    await prisma.adProject.update({
-      where: { id: projectId },
+    // updateMany so a cancelled project keeps its "Cancelled by owner" message
+    // instead of getting overwritten with the worker's last-ditch error.
+    await prisma.adProject.updateMany({
+      where: { id: projectId, status: "generating" },
       data: {
         status: "failed",
         generationPhase: null,

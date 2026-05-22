@@ -500,6 +500,38 @@ adStudioRoute.post("/projects/:id/generate", async (c) => {
   }
 });
 
+// Cancel a generation that's in flight. We can't actually kill a running
+// pg-boss worker, but flipping status to `failed` here makes the worker's
+// final write-back a no-op (the worker uses updateMany with where status=
+// "generating"), so torn writes are impossible. Owner can retry immediately.
+adStudioRoute.post("/projects/:id/cancel", async (c) => {
+  try {
+    const auth = c.var.auth;
+    const project = await loadProjectForUser(c.req.param("id"), auth.clerkId);
+    ensureAdStudioEnabled(project.restaurant);
+
+    // Race-safe: only flip if still generating. If a worker just finished and
+    // wrote `ready` 50ms ago, we return 409 so the UI re-fetches and shows the
+    // creatives instead of "Cancelled by owner".
+    const flipped = await prisma.adProject.updateMany({
+      where: { id: project.id, status: "generating" },
+      data: {
+        status: "failed",
+        generationPhase: null,
+        lastError: "Cancelled by owner — click Retry to start a fresh generation.",
+      },
+    });
+
+    if (flipped.count === 0) {
+      throw new ApiError("This project is no longer generating", 409);
+    }
+
+    return c.json({ ok: true });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
 // =============================================================================
 // Creative variant edit + regenerate-image
 // =============================================================================
