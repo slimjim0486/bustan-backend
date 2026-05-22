@@ -23,6 +23,7 @@ import {
   IMAGE_PROMPT_TOOL_SCHEMA,
 } from "./prompts";
 import { runSafetyPass } from "./safety";
+import { assertLimitsRespected, enforceCopyLimits } from "./copy-length-enforcer";
 import type {
   AdStudioBrief,
   CopyVariant,
@@ -136,7 +137,13 @@ export async function runCopyPass(args: {
   if (!result.variants || result.variants.length === 0) {
     throw new ApiError("Claude returned an empty variant list", 502);
   }
-  return result.variants;
+
+  // Belt-and-suspenders over the tool schema's maxLength: re-check every
+  // field, ask Claude to rewrite any over-length copy, smart-truncate the
+  // rest. Failures here mean the export validator and Meta both pass.
+  const enforced = await enforceCopyLimits({ variants: result.variants, totals: args.totals });
+  assertLimitsRespected(enforced.variants);
+  return enforced.variants;
 }
 
 // =============================================================================

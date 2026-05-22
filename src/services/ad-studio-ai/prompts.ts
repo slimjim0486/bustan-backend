@@ -252,8 +252,15 @@ export function buildCopySystemPrompt(): string {
   return [
     "You are the copywriter inside Bustan's Ad Creative Studio.",
     "You write restaurant ad copy that respects the dialect rule encoded in the brief.",
+    "",
+    "## HARD CHARACTER LIMITS (Meta will reject the export if you exceed these — count every character before submitting)",
+    `  • headline: ≤ ${META_COPY_LIMITS.headline} characters (English AND Arabic)`,
+    `  • primaryText: ≤ ${META_COPY_LIMITS.primaryText} characters (English AND Arabic)`,
+    `  • ctaText: ≤ ${META_COPY_LIMITS.ctaText} characters (English AND Arabic)`,
+    "These are HARD limits, not targets. 41-character headlines fail. 126-character primary text fails. Count spaces, punctuation, and emoji as characters. If your draft is over, REWRITE — do not submit it and hope for the best.",
+    "",
     "Each variant must:",
-    "  1. Stay within platform character limits provided in the brief.",
+    "  1. Be within the hard limits above. This is the single most important rule.",
     "  2. Use the dialect specified.",
     "  3. Be specific to THE restaurant and dish — never generic.",
     "  4. Use the assigned hook template as the headline starting point.",
@@ -308,14 +315,31 @@ export function buildCopyUserPrompt(args: {
     `Generate exactly ${numberOfVariants} variants.`,
     `Each variant: { variant, archetypeId, hookId, ctaId, language, headline, primaryText, ctaText, headlineAr?, primaryTextAr?, ctaTextAr? }`,
     `If dialect is "bilingual", produce both English and Arabic fields.`,
-    `Headline: max 40 chars (Meta), max 100 chars (TikTok), max 34 chars (Snapchat). Stay under 40 to be cross-platform.`,
-    `Primary text: max 125 chars before the "see more" cut on Meta.`,
+    "",
+    `## Character limits — count every character (HARD LIMITS, not targets)`,
+    `  • headline ≤ ${META_COPY_LIMITS.headline} chars (Meta cap; also fits TikTok 100 / Snapchat 34 — stay under to be cross-platform)`,
+    `  • primaryText ≤ ${META_COPY_LIMITS.primaryText} chars (Meta Feed cut; Reels truncates at 72 — front-load the value prop)`,
+    `  • ctaText ≤ ${META_COPY_LIMITS.ctaText} chars (button-label discipline — keep it imperative and short)`,
+    `Both English and Arabic must respect these limits. If your first draft is over, rewrite — do not submit and hope for the best.`,
+    "",
     `CTA: must be one of the provided CTA strings.`,
     `Headlines must be specific to "${brand.name}" — never generic.`,
   ].filter(Boolean).join("\n");
 }
 
 export const COPY_TOOL_NAME = "record_copy_variants";
+
+// Length caps mirror Meta's tightest placement limits so generated copy is
+// always export-ready. Single source of truth — also imported by the
+// copy-length-enforcer so the schema, the prompt, and the enforcer can't
+// drift apart. Anthropic's tool-use validator rejects over-length output at
+// the SDK boundary, so most variants are constrained at generation time;
+// the enforcer is the safety net for the edge cases that slip through.
+export const META_COPY_LIMITS = {
+  headline: 40, // Meta Feed / Reels / Stories — all 40
+  primaryText: 125, // Meta Feed truncates after 125 (Reels even earlier at 72)
+  ctaText: 30, // Meta description field (FB) — keeps button-style labels short
+} as const;
 
 export const COPY_TOOL_SCHEMA = {
   name: COPY_TOOL_NAME,
@@ -337,12 +361,12 @@ export const COPY_TOOL_SCHEMA = {
             hookId: { type: "string" },
             ctaId: { type: "string" },
             language: { type: "string", enum: ["en", "ar", "bilingual"] },
-            headline: { type: "string", maxLength: 80 },
-            primaryText: { type: "string", maxLength: 280 },
-            ctaText: { type: "string", maxLength: 60 },
-            headlineAr: { type: ["string", "null"], maxLength: 80 },
-            primaryTextAr: { type: ["string", "null"], maxLength: 280 },
-            ctaTextAr: { type: ["string", "null"], maxLength: 60 },
+            headline: { type: "string", maxLength: META_COPY_LIMITS.headline },
+            primaryText: { type: "string", maxLength: META_COPY_LIMITS.primaryText },
+            ctaText: { type: "string", maxLength: META_COPY_LIMITS.ctaText },
+            headlineAr: { type: ["string", "null"], maxLength: META_COPY_LIMITS.headline },
+            primaryTextAr: { type: ["string", "null"], maxLength: META_COPY_LIMITS.primaryText },
+            ctaTextAr: { type: ["string", "null"], maxLength: META_COPY_LIMITS.ctaText },
           },
         },
       },
