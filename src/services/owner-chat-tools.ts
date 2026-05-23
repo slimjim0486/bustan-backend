@@ -25,6 +25,10 @@ import {
 import { suggestDietaryTags } from "@/services/dietary-tagger";
 import { analyzeMenu } from "@/services/menu-analyzer";
 import { sundayOfThisWeekUae } from "@/services/sabt-pack";
+import {
+  calendarMoments,
+  resolveUpcomingMomentOccurrence,
+} from "@/services/ad-studio/calendar";
 import type {
   CompetitorChanges,
   MenuItemSignal,
@@ -144,6 +148,19 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: "object" as const,
       properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "list_calendar_moments",
+    description:
+      "List MENA marketing calendar moments (Ramadan, Eid, National Day, Mother's Day, etc.) with their canonical IDs and next-upcoming date range. Call this when the owner mentions an event by name and you need the moment_id to pass into create_promotion or to confirm the dates with the owner.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Optional fuzzy name match (e.g., \"eid\", \"national\"). Returns all moments if omitted." },
+        within_days: { type: "number", description: "Optional. Only return moments whose next occurrence starts within this many days from today. Useful for \"what's coming up next month?\"." },
+      },
       required: [],
     },
   },
@@ -305,7 +322,7 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
   {
     name: "create_promotion",
     description:
-      "Create a new promotion (discounted item, deal, or combo) with optional AI-generated copy.",
+      "Create a new promotion (discounted item, deal, or combo) with optional AI-generated copy. When the owner names a calendar event (Ramadan, Eid, National Day, Mother's Day, etc.), pass moment_id to tie the promo to that moment — starts_at/ends_at will auto-fill from the moment's date range. When the owner states a percentage off (\"15% off\", \"20%\"), prefer discount_percent over promo_price; the server computes the absolute promo price from the item's current price.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -316,9 +333,11 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
         description: { type: "string" },
         badge_label: { type: "string" },
         terms: { type: "string" },
-        promo_price: { type: "number" },
-        starts_at: { type: "string", description: "ISO date string" },
-        ends_at: { type: "string", description: "ISO date string" },
+        promo_price: { type: "number", description: "Absolute promo price in AED. Use this OR discount_percent, not both. If both are passed, discount_percent wins." },
+        discount_percent: { type: "number", description: "Percentage off the current item price, e.g. 15 for 15% off. Server computes promo_price as round(currentPrice * (1 - discount_percent/100)). For deal/combo types with multiple items, applies to the sum of item prices." },
+        starts_at: { type: "string", description: "ISO date string. Optional if moment_id is supplied." },
+        ends_at: { type: "string", description: "ISO date string. Optional if moment_id is supplied." },
+        moment_id: { type: "string", description: "Optional calendar moment ID (e.g. \"eid_al_fitr\", \"ramadan\", \"uae_national_day\"). When supplied, the promo is linked to that moment and date defaults are taken from its next-upcoming occurrence. Use list_calendar_moments to discover valid IDs." },
         use_ai_copy: { type: "boolean", description: "Generate AI copy for the promotion." },
         tone: { type: "string", enum: ["casual", "upscale", "playful", "formal"] },
         execute: { type: "boolean" },
@@ -777,6 +796,8 @@ export async function executeTool(
         return await execGetImageStatus(targetId);
       case "get_promotion_list":
         return await execGetPromotionList(restaurantId);
+      case "list_calendar_moments":
+        return await execListCalendarMoments(input);
       case "get_restaurant_info":
         return await execGetRestaurantInfo(restaurantId);
       case "get_ai_usage":
@@ -1228,6 +1249,61 @@ async function execGetPromotionList(restaurantId: string): Promise<ToolResult> {
           price: formatPrice(pi.menuItem.price),
         })),
       })),
+    }),
+  };
+}
+
+async function execListCalendarMoments(input: Input): Promise<ToolResult> {
+  const query = input.query ? String(input.query).trim().toLowerCase() : null;
+  const withinDays =
+    input.within_days != null && Number.isFinite(Number(input.within_days))
+      ? Number(input.within_days)
+      : null;
+
+  const now = new Date();
+  const horizon = withinDays != null ? new Date(now.getTime() + withinDays * 86400000) : null;
+
+  const rows = calendarMoments
+    .map((m) => {
+      const next = resolveUpcomingMomentOccurrence(m.id, now.toISOString());
+      return next
+        ? {
+            id: m.id,
+            name: m.name,
+            kind: m.kind,
+            year: next.year,
+            from: next.from,
+            to: next.to,
+            spendPulse: m.spendPulse,
+            countries: m.countries,
+            notes: next.notes ?? null,
+          }
+        : null;
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null)
+    .filter((row) => {
+      if (!query) return true;
+      return (
+        row.id.toLowerCase().includes(query) ||
+        row.name.toLowerCase().includes(query) ||
+        // Match common aliases ("eid" → eid_al_fitr / eid_al_adha).
+        row.id.replace(/_/g, " ").toLowerCase().includes(query)
+      );
+    })
+    .filter((row) => {
+      if (!horizon) return true;
+      return new Date(row.from) <= horizon;
+    })
+    .sort((a, b) => (a.from < b.from ? -1 : 1));
+
+  return {
+    content: JSON.stringify({
+      count: rows.length,
+      moments: rows,
+      note:
+        rows.length === 0 && query
+          ? `No calendar moments match "${query}". Try broader terms like "eid", "national", or "ramadan".`
+          : undefined,
     }),
   };
 }
@@ -2190,6 +2266,9 @@ async function execCreatePromotion(
       startsAt: string | null;
       endsAt: string | null;
       itemIds: string[];
+      sourceMomentId: string | null;
+      sourceMomentYear: number | null;
+      sourceMomentStartsOn: string | null;
     };
 
     const promo = await prisma.promotion.create({
@@ -2204,6 +2283,9 @@ async function execCreatePromotion(
         promoPrice: preview.promoPrice,
         startsAt: preview.startsAt ? new Date(preview.startsAt) : null,
         endsAt: preview.endsAt ? new Date(preview.endsAt) : null,
+        sourceMomentId: preview.sourceMomentId,
+        sourceMomentYear: preview.sourceMomentYear,
+        sourceMomentStartsOn: preview.sourceMomentStartsOn ? new Date(preview.sourceMomentStartsOn) : null,
         isActive: true,
         isFeatured: false,
         displayOrder: 0,
@@ -2233,6 +2315,51 @@ async function execCreatePromotion(
     return { content: JSON.stringify({ error: "No valid menu items found." }) };
   }
 
+  // Resolve calendar moment (if any). Defaults dates to the moment's next-upcoming
+  // occurrence when the owner didn't supply explicit starts_at/ends_at.
+  let startsAt = input.starts_at ? String(input.starts_at) : null;
+  let endsAt = input.ends_at ? String(input.ends_at) : null;
+  let sourceMomentId: string | null = null;
+  let sourceMomentYear: number | null = null;
+  let sourceMomentStartsOn: string | null = null;
+  let momentName: string | null = null;
+
+  if (input.moment_id) {
+    const occurrence = resolveUpcomingMomentOccurrence(String(input.moment_id), new Date().toISOString());
+    if (!occurrence) {
+      return {
+        content: JSON.stringify({
+          error: `Unknown calendar moment "${String(input.moment_id)}". Call list_calendar_moments to see valid IDs.`,
+        }),
+      };
+    }
+    sourceMomentId = occurrence.moment.id;
+    sourceMomentYear = occurrence.year;
+    sourceMomentStartsOn = occurrence.from;
+    momentName = occurrence.moment.name;
+    if (!startsAt) startsAt = occurrence.from;
+    if (!endsAt) endsAt = occurrence.to;
+  }
+
+  // Resolve promo price. discount_percent wins over absolute promo_price when both
+  // are passed — the agent prompt steers Sous Chef to prefer discount_percent for
+  // percentage requests so the server (not the LLM) does the arithmetic.
+  let promoPrice: number | null = input.promo_price != null ? Number(input.promo_price) : null;
+  let discountPercent: number | null = null;
+  if (input.discount_percent != null) {
+    const pct = Number(input.discount_percent);
+    if (!Number.isFinite(pct) || pct <= 0 || pct >= 100) {
+      return {
+        content: JSON.stringify({ error: "discount_percent must be between 0 and 100 (exclusive)." }),
+      };
+    }
+    discountPercent = pct;
+    const baseTotal = items.reduce((sum, item) => sum + Number(item.price), 0);
+    // Round to 2 decimals — AED display convention. (KSA SAR also 2dp; KWD/BHD/OMR
+    // are 3dp but Bustan menus quote in 2dp today; revisit when currency-aware.)
+    promoPrice = Math.round(baseTotal * (1 - pct / 100) * 100) / 100;
+  }
+
   let title = input.title ? String(input.title) : "";
   let subtitle = input.subtitle ? String(input.subtitle) : null;
   let description = input.description ? String(input.description) : null;
@@ -2255,9 +2382,9 @@ async function execCreatePromotion(
           description,
           badgeLabel,
           terms,
-          promoPrice: input.promo_price ? String(input.promo_price) : null,
-          startsAt: input.starts_at ? String(input.starts_at) : null,
-          endsAt: input.ends_at ? String(input.ends_at) : null,
+          promoPrice: promoPrice != null ? String(promoPrice) : null,
+          startsAt,
+          endsAt,
           items: items.map((i) => ({
             id: i.id,
             name: i.name,
@@ -2280,7 +2407,14 @@ async function execCreatePromotion(
     }
   }
 
-  if (!title) title = `${String(input.type)} promotion`;
+  if (!title) {
+    title = momentName
+      ? `${momentName} special`
+      : `${String(input.type)} promotion`;
+  }
+  if (!badgeLabel && momentName) {
+    badgeLabel = momentName;
+  }
 
   const promoData = {
     type: String(input.type),
@@ -2289,10 +2423,13 @@ async function execCreatePromotion(
     description,
     badgeLabel,
     terms,
-    promoPrice: input.promo_price ? Number(input.promo_price) : null,
-    startsAt: input.starts_at ? String(input.starts_at) : null,
-    endsAt: input.ends_at ? String(input.ends_at) : null,
+    promoPrice,
+    startsAt,
+    endsAt,
     itemIds,
+    sourceMomentId,
+    sourceMomentYear,
+    sourceMomentStartsOn,
   };
 
   const pendingActionId = createPendingAction(restaurantId, clerkId, "create_promotion", input, promoData);
@@ -2303,7 +2440,7 @@ async function execCreatePromotion(
     title: `Create "${title}" promotion`,
     subtitle: `${items.length} item${items.length === 1 ? "" : "s"}${
       promoData.promoPrice ? ` · ${formatPrice(promoData.promoPrice)}` : ""
-    }`,
+    }${momentName ? ` · ${momentName} ${sourceMomentYear ?? ""}` : ""}`,
     iconKey: "promotion",
     affectedSurface: "/dashboard/menu",
     payload: {
@@ -2318,6 +2455,9 @@ async function execCreatePromotion(
       endsAt: promoData.endsAt,
       itemIds: promoData.itemIds,
       isFeatured: false,
+      sourceMomentId: promoData.sourceMomentId,
+      sourceMomentYear: promoData.sourceMomentYear,
+      sourceMomentStartsOn: promoData.sourceMomentStartsOn,
     },
     preview: {
       type: promoData.type,
@@ -2328,8 +2468,11 @@ async function execCreatePromotion(
       terms: promoData.terms,
       promoPrice: promoData.promoPrice ? formatPrice(promoData.promoPrice) : null,
       items: items.map((i) => i.name),
+      moment: momentName ? { id: sourceMomentId, name: momentName, year: sourceMomentYear } : null,
     },
   });
+
+  const baseTotal = items.reduce((sum, item) => sum + Number(item.price), 0);
 
   return {
     content: JSON.stringify({
@@ -2342,7 +2485,14 @@ async function execCreatePromotion(
         badgeLabel: promoData.badgeLabel,
         terms: promoData.terms,
         promoPrice: promoData.promoPrice ? formatPrice(promoData.promoPrice) : null,
+        discountPercent,
+        startsAt,
+        endsAt,
         items: items.map((i) => i.name),
+        moment: momentName
+          ? { id: sourceMomentId, name: momentName, year: sourceMomentYear, startsOn: sourceMomentStartsOn }
+          : null,
+        baseTotal: baseTotal > 0 ? formatPrice(baseTotal) : null,
       },
       draftId: draft.id,
       inboxNotice: "Drafted in the Sous Chef Inbox — approve there to ship.",
@@ -2355,7 +2505,19 @@ async function execCreatePromotion(
         ...(subtitle ? [{ label: "Subtitle", before: null, after: subtitle }] : []),
         { label: "Items", before: null, after: items.map((i) => i.name).join(", ") },
         ...(promoData.promoPrice
-          ? [{ label: "Promo Price", before: null, after: formatPrice(promoData.promoPrice) }]
+          ? [
+              {
+                label: discountPercent ? `Promo Price (${discountPercent}% off)` : "Promo Price",
+                before: baseTotal > 0 ? formatPrice(baseTotal) : null,
+                after: formatPrice(promoData.promoPrice),
+              },
+            ]
+          : []),
+        ...(momentName
+          ? [{ label: "Event", before: null, after: `${momentName} ${sourceMomentYear ?? ""}`.trim() }]
+          : []),
+        ...(startsAt && endsAt
+          ? [{ label: "Window", before: null, after: `${startsAt.slice(0, 10)} → ${endsAt.slice(0, 10)}` }]
           : []),
       ],
     },

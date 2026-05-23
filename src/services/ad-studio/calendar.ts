@@ -369,3 +369,35 @@ export function getNextMomentForCountry(country: string, afterIso: string): Cale
   }
   return next?.moment ?? null;
 }
+
+export function getMomentById(momentId: string): CalendarMoment | null {
+  return calendarMoments.find((m) => m.id === momentId) ?? null;
+}
+
+// Resolves the next-upcoming occurrence of a calendar moment. Returns the
+// active occurrence if today falls inside one of the date ranges (so an
+// owner promoting Mansaf mid-Eid still gets the current Eid window), else
+// the next future occurrence. Used by Sous Chef when an owner asks to tie
+// a promo to a named event without supplying explicit dates.
+export function resolveUpcomingMomentOccurrence(
+  momentId: string,
+  fromIso: string
+): { moment: CalendarMoment; year: number; from: string; to: string; notes?: string } | null {
+  const moment = getMomentById(momentId);
+  if (!moment) return null;
+
+  const reference = new Date(fromIso);
+  const sorted = [...moment.dates].sort((a, b) => (a.from < b.from ? -1 : 1));
+
+  const active = sorted.find((d) => new Date(d.from) <= reference && new Date(d.to) >= reference);
+  if (active) {
+    return { moment, year: active.year, from: active.from, to: active.to, notes: active.notes };
+  }
+
+  const future = sorted.find((d) => new Date(d.from) >= reference);
+  if (future) {
+    return { moment, year: future.year, from: future.from, to: future.to, notes: future.notes };
+  }
+
+  return null;
+}

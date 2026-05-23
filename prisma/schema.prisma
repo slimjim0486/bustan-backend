@@ -496,6 +496,13 @@ model Promotion {
   createdAt    DateTime      @default(now()) @map("created_at")
   updatedAt    DateTime      @updatedAt @map("updated_at")
 
+  // Event-calendar linkage. Populated when an owner ties a promo to a known
+  // marketing moment (Ramadan, Eid, National Day, etc.). Mirrors the same
+  // fields on AdProject so a single moment can join across promos and ads.
+  sourceMomentId       String?   @map("source_moment_id")
+  sourceMomentYear     Int?      @map("source_moment_year")
+  sourceMomentStartsOn DateTime? @map("source_moment_starts_on") @db.Date
+
   restaurant     Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   items          PromotionItem[]
   whatsappClicks WhatsAppClick[]
@@ -503,6 +510,7 @@ model Promotion {
 
   @@index([restaurantId, displayOrder])
   @@index([restaurantId, isActive, startsAt, endsAt])
+  @@index([sourceMomentId, sourceMomentYear])
   @@map("promotions")
 }
 
