@@ -131,11 +131,19 @@ export async function createSystemDraft(
  *   - duplicate rows when a cron retries (sabt-pack on email-failure retry)
  *   - permanently-missing rows when the first-day mirror crashes after the
  *     entity was created (event-stager would otherwise never re-attempt)
+ *   - the daily cron resurrecting a draft the owner already acted on. The
+ *     AdProject is the entity; once the owner has decided (approved → opened,
+ *     or rejected → dismissed), nagging them again the next morning is noise.
  *
- * If a draft exists in pending/approved/scheduled, we return it untouched. If
- * it's in a terminal state (shipped/rejected/expired/failed) we DO create a
- * new pending draft — the owner already acted on the old one and a recurring
- * cron resurfacing the entity is meaningful new signal.
+ * Statuses that block a new draft (any prior decision counts):
+ *   pending / approved / scheduled / shipped / rejected
+ *
+ * Statuses that allow a fresh draft (owner never effectively saw the original):
+ *   expired — TTL passed before they decided
+ *   failed  — system error during ship; the work didn't actually happen
+ *
+ * Sabt-pack's adProjectId rotates weekly, so this dedupe doesn't suppress its
+ * weekly cadence — each week's new AdProject row gets its own draft.
  */
 export async function ensureSystemDraftForAdProject(
   restaurantId: string,
@@ -153,6 +161,8 @@ export async function ensureSystemDraftForAdProject(
           DraftActionStatus.pending,
           DraftActionStatus.approved,
           DraftActionStatus.scheduled,
+          DraftActionStatus.shipped,
+          DraftActionStatus.rejected,
         ],
       },
     },
@@ -699,6 +709,11 @@ interface PromotionCreatePayload {
   endsAt?: string | null;
   itemIds: string[];
   isFeatured?: boolean;
+  // Calendar moment linkage (Ramadan, Eid, National Day, etc.). Optional —
+  // populated when Sous Chef creates a promo from an event prompt.
+  sourceMomentId?: string | null;
+  sourceMomentYear?: number | null;
+  sourceMomentStartsOn?: string | null;
 }
 
 async function shipPromotionCreate(draft: DraftAction): Promise<ShipResult> {
@@ -730,6 +745,9 @@ async function shipPromotionCreate(draft: DraftAction): Promise<ShipResult> {
       promoPrice: payload.promoPrice != null ? new Prisma.Decimal(payload.promoPrice) : null,
       startsAt: payload.startsAt ? new Date(payload.startsAt) : null,
       endsAt: payload.endsAt ? new Date(payload.endsAt) : null,
+      sourceMomentId: payload.sourceMomentId ?? null,
+      sourceMomentYear: payload.sourceMomentYear ?? null,
+      sourceMomentStartsOn: payload.sourceMomentStartsOn ? new Date(payload.sourceMomentStartsOn) : null,
       isFeatured: payload.isFeatured ?? false,
       items: {
         create: ownedItems.map((m) => ({ menuItemId: m.id })),
