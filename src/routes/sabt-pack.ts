@@ -15,6 +15,8 @@ import {
   enqueueSabtPackForRestaurant,
 } from "@/queue/sabt-pack";
 import { sundayOfThisWeekUae } from "@/services/sabt-pack";
+import { buildSabtPackBundle } from "@/services/sabt-pack/export-bundle";
+import { enforceExportRateLimit } from "@/services/ad-studio-ai/guards";
 
 export const sabtPackRoute = new Hono<{
   Variables: { auth: { clerkId: string; email: string | null; fullName: string | null } };
@@ -320,6 +322,67 @@ sabtPackRoute.post("/:projectId/skip", async (c) => {
       },
     });
     return c.json({ ok: true });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
+// =============================================================================
+// POST /api/sabt-pack/:projectId/export  — download approved posts as a ZIP
+// =============================================================================
+//
+// Bundles every *approved* slot into a posting-ready ZIP: one folder per post
+// with its image(s) + caption, an all-in-one captions.md, and a schedule
+// README. Organic content, so no Meta audiences/pixel — just the assets the
+// owner pastes into each app. Requires at least one approved slot.
+
+sabtPackRoute.post("/:projectId/export", async (c) => {
+  try {
+    const auth = c.var.auth;
+    const projectId = c.req.param("projectId");
+    const project = await loadProjectForUser(projectId, auth.clerkId);
+    ensureSabtPackEnabled(project.restaurant);
+
+    // ZIP builds fetch + repack every image; rate-limit like Ad Studio exports
+    // so a tap-loop can't pin the container. Shares the AdExport-counting cap.
+    await enforceExportRateLimit(project.restaurantId);
+
+    const approved = project.creatives.filter((cr) => cr.isApproved);
+    if (approved.length === 0) {
+      throw new ApiError("Approve at least one post before downloading.", 400);
+    }
+
+    const result = await buildSabtPackBundle({
+      projectId: project.id,
+      restaurantId: project.restaurantId,
+      restaurantName: project.restaurant.name,
+      weekStartDate: project.sabtPackWeekStartDate,
+      themeOfWeek: project.sabtPackThemeOfWeek,
+      slots: approved.map((cr) => ({
+        slot: cr.sabtPackSlot,
+        format: cr.sabtPackSlotFormat,
+        headline: cr.headline,
+        primaryText: cr.primaryText,
+        ctaText: cr.ctaText,
+        headlineAr: cr.headlineAr,
+        primaryTextAr: cr.primaryTextAr,
+        ctaTextAr: cr.ctaTextAr,
+        heroImageUrl: cr.heroImageUrl,
+        slideshowFrames: Array.isArray(cr.sabtPackSlideshowFrames)
+          ? (cr.sabtPackSlideshowFrames as string[])
+          : null,
+        gbpPostBody: cr.gbpPostBody,
+        scheduledFor: cr.scheduledFor,
+      })),
+    });
+
+    return c.json({
+      ok: true,
+      signedUrl: result.signedUrl,
+      expiresAt: result.expiresAt,
+      fileSizeBytes: result.fileSizeBytes,
+      postCount: approved.length,
+    });
   } catch (error) {
     return errorResponse(c, error);
   }
