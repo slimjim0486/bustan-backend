@@ -16,7 +16,8 @@ export type AiFeature =
   | "ad_studio_image"
   | "ad_studio_image_openai"
   | "review_reply_draft"
-  | "competitor_intel_digest";
+  | "competitor_intel_digest"
+  | "arabic_translate";
 
 const TOKEN_PRICING_USD = {
   haiku: {
@@ -36,6 +37,7 @@ function getTokenPricing(feature: AiFeature) {
     case "owner_chat_whisper":
     case "sous_chef_message":
     case "competitor_intel_digest":
+    case "arabic_translate":
       return TOKEN_PRICING_USD.haiku;
     default:
       return TOKEN_PRICING_USD.sonnet;

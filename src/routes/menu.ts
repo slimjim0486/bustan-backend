@@ -1,5 +1,12 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { Hono } from "hono";
 import { z } from "zod";
+import { env } from "@/lib/env";
+import {
+  buildArabicTranslationPayload,
+  buildArabicTranslationPrompt,
+  parseArabicTranslationResponse,
+} from "@/lib/arabic-translation";
 import {
   getEffectiveRestaurantBillingState,
   getMenuAssistantUpgradeMessage,
@@ -184,6 +191,10 @@ async function getOwnedRestaurantSummary(restaurantId: string, clerkId: string) 
 async function assertOwnership(restaurantId: string, clerkId: string) {
   await getOwnedRestaurantSummary(restaurantId, clerkId);
 }
+
+// Per-restaurant cap on AI Arabic-translation runs. checkAiLimit counts within
+// the current calendar month, so this is effectively a monthly cap.
+const ARABIC_TRANSLATE_LIMIT = 30;
 
 function assertWithinMenuItemLimit(itemLimit: number | null, totalItems: number) {
   if (itemLimit !== null && totalItems > itemLimit) {
@@ -1348,6 +1359,85 @@ export const menuRoute = new Hono<{
       });
 
       return c.json(sections, 201);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  .post("/:restaurantId/translate-arabic", requireAuth, async (c) => {
+    try {
+      const auth = c.get("auth");
+      const restaurantId = c.req.param("restaurantId");
+      const restaurant = await getOwnedRestaurantSummary(restaurantId, auth.clerkId);
+      const entitlements = getRestaurantEntitlements(restaurant);
+      if (!entitlements.arabicMenuEnabled) {
+        throw new ApiError("Arabic translation is available on Pro. Upgrade to use it.", 403);
+      }
+      if (!env.ANTHROPIC_API_KEY) {
+        throw new ApiError("AI assistant is not configured", 503);
+      }
+
+      const limit = await checkAiLimit(restaurantId, "arabic_translate", ARABIC_TRANSLATE_LIMIT);
+      if (!limit.allowed) {
+        throw new ApiError(
+          `Arabic translation limit reached (${limit.used}/${ARABIC_TRANSLATE_LIMIT} this month). Try again next month.`,
+          429
+        );
+      }
+
+      const full = await prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        include: { menuSections: { include: { items: true } } },
+      });
+      if (!full) throw new ApiError("Restaurant not found", 404);
+
+      const source = {
+        restaurant: {
+          name: full.name,
+          nameAr: full.nameAr,
+          description: full.description,
+          descriptionAr: full.descriptionAr,
+        },
+        sections: full.menuSections.map((s) => ({ id: s.id, name: s.name, nameAr: s.nameAr })),
+        items: full.menuSections.flatMap((s) =>
+          s.items.map((i) => ({
+            id: i.id,
+            name: i.name,
+            nameAr: i.nameAr,
+            description: i.description,
+            descriptionAr: i.descriptionAr,
+          }))
+        ),
+      };
+
+      const payload = buildArabicTranslationPayload(source);
+      if (
+        !payload.restaurant.name &&
+        !payload.restaurant.description &&
+        payload.sections.length === 0 &&
+        payload.items.length === 0
+      ) {
+        return c.json({ restaurant: {}, sections: [], items: [] });
+      }
+
+      const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+      const response = await client.messages.create({
+        model: env.SOUS_CHEF_MODEL,
+        max_tokens: 4096,
+        messages: [{ role: "user", content: buildArabicTranslationPrompt(payload) }],
+      });
+      const text = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+
+      await logAiUsage(
+        restaurantId,
+        "arabic_translate",
+        response.usage.input_tokens,
+        response.usage.output_tokens
+      );
+
+      return c.json(parseArabicTranslationResponse(text));
     } catch (error) {
       return errorResponse(c, error);
     }
