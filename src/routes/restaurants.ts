@@ -302,6 +302,15 @@ export const restaurantsRoute = new Hono<{
       },
       include: {
         menuItems: true,
+        operatorAccount: {
+          include: {
+            _count: {
+              select: {
+                brands: true,
+              },
+            },
+          },
+        },
         subscription: true,
         shortLink: true,
         _count: {
@@ -321,13 +330,15 @@ export const restaurantsRoute = new Hono<{
     });
 
     return c.json(
-      restaurants.map((restaurant) =>
-        withRestaurantEntitlements({
-          ...applyEffectiveBillingState(restaurant),
+      restaurants.map((r) => ({
+        ...withRestaurantEntitlements({
+          ...applyEffectiveBillingState(r),
           pendingMenuSourceImageReviewCount:
-            restaurant._count?.menuSourceImageCandidates ?? 0,
-        })
-      )
+            r._count?.menuSourceImageCandidates ?? 0,
+        }),
+        arabicSupport:
+          getRestaurantEntitlements(r).arabicMenuEnabled && Boolean(r.arabicEnabled),
+      }))
     );
   })
   .get("/me", requireAuth, async (c) => {
@@ -519,7 +530,13 @@ export const restaurantsRoute = new Hono<{
         }
       }
 
-      return c.json(withRestaurantEntitlements(hydratedRestaurant));
+      const serialized = withRestaurantEntitlements(hydratedRestaurant);
+      return c.json({
+        ...serialized,
+        arabicSupport:
+          getRestaurantEntitlements(hydratedRestaurant).arabicMenuEnabled &&
+          Boolean(hydratedRestaurant.arabicEnabled),
+      });
     } catch (error) {
       return errorResponse(c, error);
     }
