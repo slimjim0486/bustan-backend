@@ -1,5 +1,12 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { Hono } from "hono";
 import { z } from "zod";
+import { env } from "@/lib/env";
+import {
+  buildArabicTranslationPayload,
+  buildArabicTranslationPrompt,
+  parseArabicTranslationResponse,
+} from "@/lib/arabic-translation";
 import {
   getEffectiveRestaurantBillingState,
   getMenuAssistantUpgradeMessage,
@@ -26,6 +33,7 @@ import { type TruthPreservingEditPreset } from "@/services/truth-preserving-imag
 const sectionSchema = z.object({
   restaurantId: z.string().cuid(),
   name: z.string().min(1),
+  nameAr: z.string().nullable().optional(),
   displayOrder: z.number().int().nonnegative().optional(),
 });
 
@@ -33,6 +41,8 @@ const itemSchema = z.object({
   restaurantId: z.string().cuid(),
   sectionId: z.string().cuid(),
   name: z.string().min(1),
+  nameAr: z.string().nullable().optional(),
+  descriptionAr: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
   aiNotes: z.string().max(2000).nullable().optional(),
   price: z.coerce.number().nonnegative(),
@@ -182,9 +192,26 @@ async function assertOwnership(restaurantId: string, clerkId: string) {
   await getOwnedRestaurantSummary(restaurantId, clerkId);
 }
 
+// Per-restaurant cap on AI Arabic-translation runs. checkAiLimit counts within
+// the current calendar month, so this is effectively a monthly cap.
+const ARABIC_TRANSLATE_LIMIT = 30;
+
 function assertWithinMenuItemLimit(itemLimit: number | null, totalItems: number) {
   if (itemLimit !== null && totalItems > itemLimit) {
     throw new ApiError(getMenuItemLimitMessage(itemLimit), 403);
+  }
+}
+
+function hasArabicInput(data: { nameAr?: string | null; descriptionAr?: string | null }) {
+  return hasMeaningfulText(data.nameAr) || hasMeaningfulText(data.descriptionAr);
+}
+
+function assertArabicAllowed(
+  entitlements: { arabicMenuEnabled: boolean },
+  data: { nameAr?: string | null; descriptionAr?: string | null }
+) {
+  if (hasArabicInput(data) && !entitlements.arabicMenuEnabled) {
+    throw new ApiError("Arabic menus are available on Pro. Upgrade to add Arabic content.", 403);
   }
 }
 
@@ -725,15 +752,24 @@ export const menuRoute = new Hono<{
     try {
       const auth = c.get("auth");
       const data = sectionSchema.parse(await c.req.json());
-      await assertOwnership(data.restaurantId, auth.clerkId);
+      const restaurant = await getOwnedRestaurantSummary(data.restaurantId, auth.clerkId);
+      assertArabicAllowed(getRestaurantEntitlements(restaurant), data);
 
       const section = await prisma.menuSection.create({
         data: {
           restaurantId: data.restaurantId,
           name: data.name,
+          nameAr: normalizeOptionalText(data.nameAr),
           displayOrder: data.displayOrder ?? 0,
         },
       });
+
+      if (hasArabicInput(data)) {
+        await prisma.restaurant.update({
+          where: { id: data.restaurantId },
+          data: { arabicEnabled: true },
+        });
+      }
 
       return c.json(section, 201);
     } catch (error) {
@@ -745,7 +781,15 @@ export const menuRoute = new Hono<{
       const auth = c.get("auth");
       const section = await prisma.menuSection.findUnique({
         where: { id: c.req.param("id") },
-        include: { restaurant: { include: { owner: true } } },
+        include: {
+          restaurant: {
+            include: {
+              owner: true,
+              subscription: true,
+              operatorAccount: { include: { _count: { select: { brands: true } } } },
+            },
+          },
+        },
       });
 
       if (!section || section.restaurant.owner.clerkId !== auth.clerkId) {
@@ -753,10 +797,21 @@ export const menuRoute = new Hono<{
       }
 
       const data = sectionSchema.partial().parse(await c.req.json());
+      assertArabicAllowed(getRestaurantEntitlements(section.restaurant), data);
       const updated = await prisma.menuSection.update({
         where: { id: section.id },
-        data,
+        data: {
+          ...data,
+          nameAr: data.nameAr === undefined ? undefined : normalizeOptionalText(data.nameAr),
+        },
       });
+
+      if (hasArabicInput(data)) {
+        await prisma.restaurant.update({
+          where: { id: section.restaurantId },
+          data: { arabicEnabled: true },
+        });
+      }
 
       return c.json(updated);
     } catch (error) {
@@ -795,6 +850,7 @@ export const menuRoute = new Hono<{
         entitlements.menuItemLimit,
         restaurant._count.menuItems + 1
       );
+      assertArabicAllowed(entitlements, data);
       if (hasMeaningfulText(data.aiNotes) && !entitlements.menuAssistantEnabled) {
         throw new ApiError(getMenuAssistantUpgradeMessage(), 403);
       }
@@ -804,6 +860,8 @@ export const menuRoute = new Hono<{
           ...data,
           price: data.price,
           description: normalizeOptionalText(data.description),
+          nameAr: normalizeOptionalText(data.nameAr),
+          descriptionAr: normalizeOptionalText(data.descriptionAr),
           aiNotes: normalizeOptionalText(data.aiNotes),
           soldOutDate: parseOptionalDate(data.soldOutDate),
           specialStartsAt: parseOptionalDate(data.specialStartsAt),
@@ -814,6 +872,13 @@ export const menuRoute = new Hono<{
           displayOrder: data.displayOrder ?? 0,
         },
       });
+
+      if (hasArabicInput(data)) {
+        await prisma.restaurant.update({
+          where: { id: data.restaurantId },
+          data: { arabicEnabled: true },
+        });
+      }
 
       return c.json(item, 201);
     } catch (error) {
@@ -850,6 +915,7 @@ export const menuRoute = new Hono<{
 
       const data = itemSchema.partial().parse(await c.req.json());
       const entitlements = getRestaurantEntitlements(item.restaurant);
+      assertArabicAllowed(entitlements, data);
       if (hasMeaningfulText(data.aiNotes) && !entitlements.menuAssistantEnabled) {
         throw new ApiError(getMenuAssistantUpgradeMessage(), 403);
       }
@@ -863,6 +929,9 @@ export const menuRoute = new Hono<{
           ...data,
           description:
             data.description === undefined ? undefined : normalizeOptionalText(data.description),
+          nameAr: data.nameAr === undefined ? undefined : normalizeOptionalText(data.nameAr),
+          descriptionAr:
+            data.descriptionAr === undefined ? undefined : normalizeOptionalText(data.descriptionAr),
           aiNotes: data.aiNotes === undefined ? undefined : normalizeOptionalText(data.aiNotes),
           soldOutDate: parseOptionalDate(data.soldOutDate),
           specialStartsAt: parseOptionalDate(data.specialStartsAt),
@@ -870,6 +939,13 @@ export const menuRoute = new Hono<{
           price: data.price,
         },
       });
+
+      if (hasArabicInput(data)) {
+        await prisma.restaurant.update({
+          where: { id: item.restaurantId },
+          data: { arabicEnabled: true },
+        });
+      }
 
       return c.json(updated);
     } catch (error) {
@@ -1283,6 +1359,85 @@ export const menuRoute = new Hono<{
       });
 
       return c.json(sections, 201);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  .post("/:restaurantId/translate-arabic", requireAuth, async (c) => {
+    try {
+      const auth = c.get("auth");
+      const restaurantId = c.req.param("restaurantId");
+      const restaurant = await getOwnedRestaurantSummary(restaurantId, auth.clerkId);
+      const entitlements = getRestaurantEntitlements(restaurant);
+      if (!entitlements.arabicMenuEnabled) {
+        throw new ApiError("Arabic translation is available on Pro. Upgrade to use it.", 403);
+      }
+      if (!env.ANTHROPIC_API_KEY) {
+        throw new ApiError("AI assistant is not configured", 503);
+      }
+
+      const limit = await checkAiLimit(restaurantId, "arabic_translate", ARABIC_TRANSLATE_LIMIT);
+      if (!limit.allowed) {
+        throw new ApiError(
+          `Arabic translation limit reached (${limit.used}/${ARABIC_TRANSLATE_LIMIT} this month). Try again next month.`,
+          429
+        );
+      }
+
+      const full = await prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        include: { menuSections: { include: { items: true } } },
+      });
+      if (!full) throw new ApiError("Restaurant not found", 404);
+
+      const source = {
+        restaurant: {
+          name: full.name,
+          nameAr: full.nameAr,
+          description: full.description,
+          descriptionAr: full.descriptionAr,
+        },
+        sections: full.menuSections.map((s) => ({ id: s.id, name: s.name, nameAr: s.nameAr })),
+        items: full.menuSections.flatMap((s) =>
+          s.items.map((i) => ({
+            id: i.id,
+            name: i.name,
+            nameAr: i.nameAr,
+            description: i.description,
+            descriptionAr: i.descriptionAr,
+          }))
+        ),
+      };
+
+      const payload = buildArabicTranslationPayload(source);
+      if (
+        !payload.restaurant.name &&
+        !payload.restaurant.description &&
+        payload.sections.length === 0 &&
+        payload.items.length === 0
+      ) {
+        return c.json({ restaurant: {}, sections: [], items: [] });
+      }
+
+      const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+      const response = await client.messages.create({
+        model: env.SOUS_CHEF_MODEL,
+        max_tokens: 4096,
+        messages: [{ role: "user", content: buildArabicTranslationPrompt(payload) }],
+      });
+      const text = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+
+      await logAiUsage(
+        restaurantId,
+        "arabic_translate",
+        response.usage.input_tokens,
+        response.usage.output_tokens
+      );
+
+      return c.json(parseArabicTranslationResponse(text));
     } catch (error) {
       return errorResponse(c, error);
     }

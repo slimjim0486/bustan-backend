@@ -487,6 +487,7 @@ export const crmRoute = new Hono<{
           orderCount: customer.orderCount,
           totalSpend: toNumber(customer.totalSpend),
           currency: customer.currency,
+          preferredLanguage: customer.preferredLanguage,
           createdAt: customer.createdAt,
           latestConsent: customer.consents[0]
             ? {
@@ -648,6 +649,7 @@ export const crmRoute = new Hono<{
           orderCount: customer.orderCount,
           totalSpend: toNumber(customer.totalSpend),
           currency: customer.currency,
+          preferredLanguage: customer.preferredLanguage,
           createdAt: customer.createdAt,
           latestConsent: customer.consents[0]
             ? {
@@ -1760,6 +1762,36 @@ export const crmRoute = new Hono<{
         id: updated.id,
         marketingOptIn: updated.marketingOptIn,
       });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  .patch("/:restaurantId/customers/:customerId/language", requireAuth, async (c) => {
+    try {
+      const restaurantId = c.req.param("restaurantId");
+      const customerId = c.req.param("customerId");
+      const auth = c.get("auth");
+      await getOwnedRestaurant(restaurantId, auth.clerkId);
+
+      const { preferredLanguage } = z
+        .object({ preferredLanguage: z.enum(["en", "ar"]).nullable() })
+        .parse(await c.req.json());
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, restaurantId },
+        select: { id: true },
+      });
+      if (!customer) {
+        throw new ApiError("Customer not found", 404);
+      }
+
+      const updated = await prisma.customer.update({
+        where: { id: customer.id },
+        data: { preferredLanguage },
+        select: { id: true, preferredLanguage: true },
+      });
+
+      return c.json(updated);
     } catch (error) {
       return errorResponse(c, error);
     }

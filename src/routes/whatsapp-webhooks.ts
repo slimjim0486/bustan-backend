@@ -11,6 +11,7 @@ import {
   verifyMetaSignature,
 } from "@/lib/whatsapp-business";
 import { prisma } from "@/lib/prisma";
+import { detectLanguage } from "@/lib/language-detect";
 import { extractCtwaReferral } from "@/lib/ctwa-referral";
 import { resolveAdProjectByMetaAdId } from "@/lib/ctwa-resolver";
 import {
@@ -106,6 +107,7 @@ async function handleInboundMessage(input: {
   }
 
   const body = extractWebhookMessageBody(input.message);
+  const detectedLanguage = detectLanguage(body);
   const occurredAt = toWebhookDate(input.message.timestamp);
   const displayName = sanitizeDisplayName(input.contactName, fromPhone);
   const consentCommand = getWhatsAppConsentCommand(body);
@@ -140,6 +142,7 @@ async function handleInboundMessage(input: {
         normalizedPhone: fromPhone,
         phoneNumber: fromPhone,
         displayName,
+        preferredLanguage: detectedLanguage,
       },
       update: {
         phoneNumber: fromPhone,
@@ -150,6 +153,17 @@ async function handleInboundMessage(input: {
         referralCtwaClid: true,
       },
     });
+
+    // L5: auto-detect should only set preferredLanguage when it is currently
+    // null — never overwrite an existing value (manual CRM override or a
+    // prior auto-detect). updateMany with a null-guarded WHERE makes this a
+    // no-op when a value is already stored.
+    if (detectedLanguage) {
+      await tx.customer.updateMany({
+        where: { id: customer.id, preferredLanguage: null },
+        data: { preferredLanguage: detectedLanguage },
+      });
+    }
 
     // P1: capture/refresh CTWA attribution. Latest non-null referral wins
     // when the customer comes back via a different ad. Never overwrite a

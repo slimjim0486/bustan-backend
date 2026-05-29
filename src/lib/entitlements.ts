@@ -49,6 +49,8 @@ export interface PlanEntitlements {
   // Phase 3.1 — Google Search Console dashboard. Read-only view of GSC data
   // sliced per restaurant from Bustan's shared GSC property.
   gscDashboardEnabled: boolean;
+  // Arabic bilingual menus + public /ar page + AI translate. Pro/Portfolio only.
+  arabicMenuEnabled: boolean;
   // Sabt Pack — weekly auto-generated 7-post bundle delivered Sun 07:00 GST.
   // Pro/Portfolio only. Cap bounds variable image-gen spend per restaurant
   // per week — orchestrator force-reuses menu photos beyond this ceiling.
@@ -107,6 +109,7 @@ const PLAN_ENTITLEMENTS: Record<
     openaiImageMonthlyLimit: 0,
     adGenerationsPerProject: 0,
     gscDashboardEnabled: false,
+    arabicMenuEnabled: false,
     sabtPackEnabled: false,
     sabtPackMaxCostUsdPerWeek: 0,
     competitorIntelligenceEnabled: false,
@@ -152,6 +155,7 @@ const PLAN_ENTITLEMENTS: Record<
     openaiImageMonthlyLimit: 50,
     adGenerationsPerProject: 6,
     gscDashboardEnabled: true,
+    arabicMenuEnabled: true,
     sabtPackEnabled: true,
     sabtPackMaxCostUsdPerWeek: 1.0,
     competitorIntelligenceEnabled: true,
@@ -197,6 +201,7 @@ const PLAN_ENTITLEMENTS: Record<
     openaiImageMonthlyLimit: 50,
     adGenerationsPerProject: 6,
     gscDashboardEnabled: true,
+    arabicMenuEnabled: true,
     sabtPackEnabled: true,
     sabtPackMaxCostUsdPerWeek: 1.0,
     competitorIntelligenceEnabled: true,
@@ -246,6 +251,7 @@ const DRAFT_ENTITLEMENTS: PlanEntitlements = {
   openaiImageMonthlyLimit: 0,
   adGenerationsPerProject: 0,
   gscDashboardEnabled: false,
+  arabicMenuEnabled: false,
   sabtPackEnabled: false,
   sabtPackMaxCostUsdPerWeek: 0,
   competitorIntelligenceEnabled: false,

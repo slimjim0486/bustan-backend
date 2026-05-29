@@ -290,6 +290,9 @@ model Restaurant {
   slug                 String             @unique
   name                 String
   description          String?
+  nameAr               String?            @map("name_ar")
+  descriptionAr        String?            @map("description_ar")
+  arabicEnabled        Boolean            @default(false) @map("arabic_enabled")
   cuisineType          String?            @map("cuisine_type")
   themeKey             String?            @map("theme_key")
   location             String?
@@ -371,6 +374,7 @@ model MenuSection {
   id           String   @id @default(cuid())
   restaurantId String   @map("restaurant_id")
   name         String
+  nameAr       String?  @map("name_ar")
   displayOrder Int      @default(0) @map("display_order")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
@@ -388,6 +392,8 @@ model MenuItem {
   restaurantId        String    @map("restaurant_id")
   name                String
   description         String?
+  nameAr              String?   @map("name_ar")
+  descriptionAr       String?   @map("description_ar")
   aiNotes             String?   @map("ai_notes")
   price               Decimal   @db.Decimal(10, 2)
   currency            String    @default("AED")
@@ -741,6 +747,7 @@ model Customer {
   orderCount        Int       @default(0) @map("order_count")
   totalSpend        Decimal   @default(0) @map("total_spend") @db.Decimal(10, 2)
   currency          String    @default("AED")
+  preferredLanguage String?  @map("preferred_language")
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
@@ -1202,6 +1209,7 @@ model DietaryTag {
   id           String               @id @default(cuid())
   key          String               @unique
   label        String
+  labelAr      String?              @map("label_ar")
   icon         String?
   category     String               @default("dietary")
   menuItemTags MenuItemDietaryTag[]

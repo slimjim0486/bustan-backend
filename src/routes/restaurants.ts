@@ -66,6 +66,7 @@ const createRestaurantSchema = z.object({
   coverImageUrl: z.string().url().nullable().optional(),
   isPublished: z.boolean().optional(),
   isDemo: z.boolean().optional(),
+  arabicEnabled: z.boolean().optional(),
 });
 
 const updateRestaurantSchema = createRestaurantSchema.partial().extend({
@@ -112,7 +113,8 @@ const restaurantDetailsInclude = {
 
 const restaurantPublicInclude = {
   operatorAccount: {
-    include: {
+    select: {
+      status: true,
       _count: {
         select: {
           brands: true,
@@ -120,7 +122,7 @@ const restaurantPublicInclude = {
       },
     },
   },
-  subscription: true,
+  subscription: { select: { plan: true, status: true } },
   shortLink: true,
   gbpConnection: true,
   menuSections: {
@@ -302,7 +304,17 @@ export const restaurantsRoute = new Hono<{
       },
       include: {
         menuItems: true,
-        subscription: true,
+        operatorAccount: {
+          select: {
+            status: true,
+            _count: {
+              select: {
+                brands: true,
+              },
+            },
+          },
+        },
+        subscription: { select: { plan: true, status: true } },
         shortLink: true,
         _count: {
           select: {
@@ -321,13 +333,15 @@ export const restaurantsRoute = new Hono<{
     });
 
     return c.json(
-      restaurants.map((restaurant) =>
-        withRestaurantEntitlements({
-          ...applyEffectiveBillingState(restaurant),
+      restaurants.map((r) => ({
+        ...withRestaurantEntitlements({
+          ...applyEffectiveBillingState(r),
           pendingMenuSourceImageReviewCount:
-            restaurant._count?.menuSourceImageCandidates ?? 0,
-        })
-      )
+            r._count?.menuSourceImageCandidates ?? 0,
+        }),
+        arabicSupport:
+          getRestaurantEntitlements(r).arabicMenuEnabled && Boolean(r.arabicEnabled),
+      }))
     );
   })
   .get("/me", requireAuth, async (c) => {
@@ -519,7 +533,13 @@ export const restaurantsRoute = new Hono<{
         }
       }
 
-      return c.json(withRestaurantEntitlements(hydratedRestaurant));
+      const serialized = withRestaurantEntitlements(hydratedRestaurant);
+      return c.json({
+        ...serialized,
+        arabicSupport:
+          getRestaurantEntitlements(hydratedRestaurant).arabicMenuEnabled &&
+          Boolean(hydratedRestaurant.arabicEnabled),
+      });
     } catch (error) {
       return errorResponse(c, error);
     }
