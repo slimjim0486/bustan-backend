@@ -122,7 +122,7 @@ const restaurantPublicInclude = {
       },
     },
   },
-  subscription: true,
+  subscription: { select: { plan: true, status: true } },
   shortLink: true,
   gbpConnection: true,
   menuSections: {
@@ -314,7 +314,7 @@ export const restaurantsRoute = new Hono<{
             },
           },
         },
-        subscription: true,
+        subscription: { select: { plan: true, status: true } },
         shortLink: true,
         _count: {
           select: {
