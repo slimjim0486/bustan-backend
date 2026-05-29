@@ -66,6 +66,7 @@ const createRestaurantSchema = z.object({
   coverImageUrl: z.string().url().nullable().optional(),
   isPublished: z.boolean().optional(),
   isDemo: z.boolean().optional(),
+  arabicEnabled: z.boolean().optional(),
 });
 
 const updateRestaurantSchema = createRestaurantSchema.partial().extend({
