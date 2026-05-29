@@ -147,13 +147,23 @@ async function handleInboundMessage(input: {
       update: {
         phoneNumber: fromPhone,
         displayName: input.contactName ?? undefined,
-        preferredLanguage: detectedLanguage ?? undefined,
       },
       select: {
         id: true,
         referralCtwaClid: true,
       },
     });
+
+    // L5: auto-detect should only set preferredLanguage when it is currently
+    // null — never overwrite an existing value (manual CRM override or a
+    // prior auto-detect). updateMany with a null-guarded WHERE makes this a
+    // no-op when a value is already stored.
+    if (detectedLanguage) {
+      await tx.customer.updateMany({
+        where: { id: customer.id, preferredLanguage: null },
+        data: { preferredLanguage: detectedLanguage },
+      });
+    }
 
     // P1: capture/refresh CTWA attribution. Latest non-null referral wins
     // when the customer comes back via a different ad. Never overwrite a
