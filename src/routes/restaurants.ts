@@ -112,7 +112,8 @@ const restaurantDetailsInclude = {
 
 const restaurantPublicInclude = {
   operatorAccount: {
-    include: {
+    select: {
+      status: true,
       _count: {
         select: {
           brands: true,
@@ -303,7 +304,8 @@ export const restaurantsRoute = new Hono<{
       include: {
         menuItems: true,
         operatorAccount: {
-          include: {
+          select: {
+            status: true,
             _count: {
               select: {
                 brands: true,
