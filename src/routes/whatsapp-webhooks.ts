@@ -11,6 +11,7 @@ import {
   verifyMetaSignature,
 } from "@/lib/whatsapp-business";
 import { prisma } from "@/lib/prisma";
+import { detectLanguage } from "@/lib/language-detect";
 import { extractCtwaReferral } from "@/lib/ctwa-referral";
 import { resolveAdProjectByMetaAdId } from "@/lib/ctwa-resolver";
 import {
@@ -106,6 +107,7 @@ async function handleInboundMessage(input: {
   }
 
   const body = extractWebhookMessageBody(input.message);
+  const detectedLanguage = detectLanguage(body);
   const occurredAt = toWebhookDate(input.message.timestamp);
   const displayName = sanitizeDisplayName(input.contactName, fromPhone);
   const consentCommand = getWhatsAppConsentCommand(body);
@@ -140,10 +142,12 @@ async function handleInboundMessage(input: {
         normalizedPhone: fromPhone,
         phoneNumber: fromPhone,
         displayName,
+        preferredLanguage: detectedLanguage,
       },
       update: {
         phoneNumber: fromPhone,
         displayName: input.contactName ?? undefined,
+        preferredLanguage: detectedLanguage ?? undefined,
       },
       select: {
         id: true,
