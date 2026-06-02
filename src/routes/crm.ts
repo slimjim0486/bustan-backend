@@ -45,6 +45,10 @@ import {
   subscribeWhatsAppBusinessAccount,
 } from "@/lib/whatsapp-business";
 import { ORDER_TEMPLATE_DEFINITIONS } from "@/lib/whatsapp-order-templates";
+import {
+  isMarketingEligible,
+  marketingEligibleWhere,
+} from "@/lib/marketing-eligibility";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { requireAuth } from "@/middleware/auth";
 
@@ -294,12 +298,15 @@ export const crmRoute = new Hono<{
         conversations,
       ] = await Promise.all([
         prisma.customer.count({ where: { restaurantId } }),
-        prisma.customer.count({ where: { restaurantId, marketingOptIn: true } }),
+        // Opted-in count must use the SAME eligibility rule as the campaign
+        // send (provable consent), otherwise the audience preview over-counts
+        // legacy boolean-only customers and promises sends that get filtered
+        // out. See marketing-eligibility.ts.
+        prisma.customer.count({ where: marketingEligibleWhere(restaurantId) }),
         prisma.customer.count({ where: { restaurantId, orderCount: { gt: 1 } } }),
         prisma.customer.count({
           where: {
-            restaurantId,
-            marketingOptIn: true,
+            ...marketingEligibleWhere(restaurantId),
             lastOrderAt: {
               lt: inactiveCutoff,
             },
@@ -1305,27 +1312,13 @@ export const crmRoute = new Hono<{
       const canSendViaApi = deliveryMode === "meta_cloud_api";
       const inactiveCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
       // C6 fix: campaigns must NEVER send to customers without proof of
-      // consent. Filter requires:
-      //  - marketingOptIn = true (current state)
-      //  - marketingOptInAt = not null (a consent timestamp exists)
-      //  - latest CustomerConsent row is opt_in (proof, not just a flag)
-      // The latest-consent check requires a sub-query (Prisma can't express
-      // "the most recent row in a one-to-many" in `where`), so we filter
-      // the candidate set with `consents.some({status:opt_in})` here and
-      // confirm "latest is opt_in" per-customer in memory below.
-      // (Note: an earlier draft also enforced 12-month consent freshness;
-      // dropped because WhatsApp's marketing policy is "valid opt-in with
-      // no opt-out" and PDPL doesn't actually require periodic re-confirm.
-      // The latest-consent precedence check is the real safeguard.)
-      const baseWhere = {
-        restaurantId,
-        marketingOptIn: true,
-        marketingOptInAt: { not: null },
-        // Customer must have at least one opt_in consent record to be
-        // eligible (defends against direct DB writes / migrations that
-        // flip the boolean without a paper trail).
-        consents: { some: { status: "opt_in" as const } },
-      } satisfies Prisma.CustomerWhereInput;
+      // consent. The eligibility rule (boolean + timestamp + opt_in paper
+      // trail, with latest-consent precedence) lives in marketing-eligibility.ts
+      // and is shared with the audience-preview counts in the summary endpoint
+      // so the two can never drift apart again. The `consents.some(opt_in)`
+      // part of the where also defends against direct DB writes / migrations
+      // that flip the boolean without a paper trail.
+      const baseWhere = marketingEligibleWhere(restaurantId);
       const customerWhere =
         data.type === "inactive_30"
           ? {
@@ -1357,8 +1350,12 @@ export const crmRoute = new Hono<{
       // Final precedence check: only customers whose MOST RECENT consent
       // is opt_in are sent to. If they ever opted out, they're excluded
       // even if marketingOptIn = true (defense-in-depth against flips).
-      const customers = candidates.filter(
-        (cust) => cust.consents[0]?.status === "opt_in"
+      const customers = candidates.filter((cust) =>
+        isMarketingEligible({
+          marketingOptIn: cust.marketingOptIn,
+          marketingOptInAt: cust.marketingOptInAt,
+          latestConsentStatus: cust.consents[0]?.status ?? null,
+        })
       );
       const fallbackBody = getDefaultCampaignBody({
         type: data.type,
