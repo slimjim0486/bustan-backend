@@ -186,6 +186,7 @@ async function main() {
   let failures = 0;
   for (const golden of prompts) {
     const errors: string[] = [];
+    let turnDebug: TurnResult | undefined;
     try {
       const turn = await runTurn(
         client,
@@ -195,6 +196,7 @@ async function main() {
         systemPrompt,
         golden.prompt
       );
+      turnDebug = turn;
 
       if (golden.expect.escalation !== undefined && turn.escalated !== golden.expect.escalation) {
         errors.push(`escalation ${turn.escalated} != ${golden.expect.escalation}`);
@@ -226,6 +228,9 @@ async function main() {
       errors.push(`threw: ${error instanceof Error ? error.message : String(error)}`);
     }
 
+    if (process.env.EVAL_DEBUG) {
+      console.log(`DEBUG ${golden.id}: escalated=${turnDebug?.escalated} firstWrite=${turnDebug?.firstWrite ? turnDebug.firstWrite.name + " " + JSON.stringify(turnDebug.firstWrite.args) : "none"} reads=[${turnDebug?.readToolsCalled}]`);
+    }
     if (errors.length > 0) {
       failures++;
       console.log(`FAIL ${golden.id}: ${errors.join("; ")}`);
