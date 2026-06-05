@@ -10,7 +10,15 @@ import { buildOwnerSystemPrompt } from "@/lib/owner-chat-prompts";
 import { prisma } from "@/lib/prisma";
 import { assertRateLimit } from "@/lib/public-request-guards";
 import { requireAuth } from "@/middleware/auth";
-import { createSousChefMessage } from "@/services/anthropic-models";
+import { createSousChefMessage, type SousChefModelTier } from "@/services/anthropic-models";
+import {
+  type EscalationTrigger,
+  HAIKU_CAPS,
+  PLANNER_CAPS,
+  findEscalationTrigger,
+  isEscalationBudgetExhausted,
+  shouldStartOnPlanner,
+} from "@/services/owner-chat-routing";
 import { OWNER_TOOLS, executeTool } from "@/services/owner-chat-tools";
 import { enqueueExtractionForRestaurant } from "@/queue/owner-chat-memory";
 import { enqueueWhisperForRestaurant } from "@/queue/owner-whisper";
@@ -188,8 +196,6 @@ async function loadOwnedRestaurant(restaurantId: string, clerkId: string) {
 }
 
 // ── Route ──────────────────────────────────────────────────────
-
-const MAX_TOOL_ITERATIONS = 8;
 
 export const ownerChatRoute = new Hono<{
   Variables: {
@@ -547,13 +553,23 @@ export const ownerChatRoute = new Hono<{
       ];
 
       const client = getClient();
-      let totalInputTokens = 0;
-      let totalOutputTokens = 0;
+      const routingEnabled = restaurant.sousChefRoutingEnabled;
+
+      // Token accounting per tier: exactly one "owner_chat" row per turn keeps
+      // the monthly turn counter (which counts rows) intact; planner tokens get
+      // their own feature row priced at Sonnet rates.
+      const tierTokens = {
+        default: { input: 0, output: 0 },
+        planner: { input: 0, output: 0 },
+      };
       let accumulatedText = "";
+      let modelUsed: string | null = null;
       const accumulatedToolCalls: Anthropic.ToolUseBlock[] = [];
       const accumulatedToolResults: Anthropic.ToolResultBlockParam[] = [];
 
-      // Stream via ReadableStream
+      // Frozen baseline for planner re-runs — loops mutate their own copy.
+      const baseMessages = [...messages];
+
       const stream = new ReadableStream({
         async start(controller) {
           const encoder = new TextEncoder();
@@ -562,26 +578,55 @@ export const ownerChatRoute = new Hono<{
             controller.enqueue(encoder.encode(sseEvent(event, data)));
           }
 
-          let iterations = 0;
+          async function runLoop(opts: {
+            tier: SousChefModelTier;
+            caps: { maxIterations: number; maxTokens: number };
+            escalationEnabled: boolean;
+            loopMessages: Anthropic.MessageParam[];
+          }): Promise<{ trigger: EscalationTrigger | null }> {
+            let iterations = 0;
+            let executedToolCalls = 0;
+            let exhausted = true; // flipped when the loop exits naturally
 
-          try {
-            while (iterations <= MAX_TOOL_ITERATIONS) {
-              const response = await createSousChefMessage(client, {
-                max_tokens: 1024,
-                system: systemPrompt,
-                tools: OWNER_TOOLS,
-                messages,
-              }, {
-                route: "owner-chat",
-                restaurantId,
-                clerkId: auth.clerkId,
-                iteration: iterations,
-              });
+            while (iterations <= opts.caps.maxIterations) {
+              const response = await createSousChefMessage(
+                client,
+                {
+                  max_tokens: opts.caps.maxTokens,
+                  system: systemPrompt,
+                  tools: OWNER_TOOLS,
+                  messages: opts.loopMessages,
+                },
+                {
+                  route: "owner-chat",
+                  restaurantId,
+                  clerkId: auth.clerkId,
+                  iteration: iterations,
+                  tier: opts.tier,
+                },
+                opts.tier
+              );
 
-              totalInputTokens += response.usage.input_tokens;
-              totalOutputTokens += response.usage.output_tokens;
+              modelUsed = response.model;
+              tierTokens[opts.tier].input += response.usage.input_tokens;
+              tierTokens[opts.tier].output += response.usage.output_tokens;
 
-              // Stream text blocks
+              const toolUseBlocks = response.content.filter(
+                (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
+              );
+
+              // Escalation check BEFORE executing tools: the whole turn re-runs
+              // on the planner, so writes must never execute on this tier.
+              if (opts.escalationEnabled && toolUseBlocks.length > 0) {
+                const trigger = findEscalationTrigger(
+                  toolUseBlocks.map((block) => block.name),
+                  executedToolCalls
+                );
+                if (trigger) {
+                  return { trigger };
+                }
+              }
+
               for (const block of response.content) {
                 if (block.type === "text" && block.text.trim()) {
                   emit("text", { delta: block.text });
@@ -589,25 +634,19 @@ export const ownerChatRoute = new Hono<{
                 }
               }
 
-              // If done (no tool calls), break
               if (response.stop_reason === "end_turn" || response.stop_reason === "max_tokens") {
+                exhausted = false;
                 break;
               }
-
-              // Extract tool use blocks
-              const toolUseBlocks = response.content.filter(
-                (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
-              );
 
               if (toolUseBlocks.length === 0) {
+                exhausted = false;
                 break;
               }
 
-              // Add assistant response to messages
-              messages.push({ role: "assistant", content: response.content });
+              opts.loopMessages.push({ role: "assistant", content: response.content });
               accumulatedToolCalls.push(...toolUseBlocks);
 
-              // Execute tools and build results
               const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
               for (const block of toolUseBlocks) {
@@ -621,14 +660,10 @@ export const ownerChatRoute = new Hono<{
                   block.input as Record<string, unknown>
                 );
 
-                // If there's a preview, emit it
                 if (result.preview) {
                   emit("preview", result.preview);
                 }
 
-                // Sous Chef Inbox: a draftId means the action was persisted as
-                // a card and the chat client should render a "view in Inbox" pill
-                // instead of the old inline approve/reject buttons.
                 if (result.draftId) {
                   emit("draft", { draftId: result.draftId, tool: block.name });
                 }
@@ -642,11 +677,114 @@ export const ownerChatRoute = new Hono<{
                 emit("tool_done", { tool: block.name, id: block.id });
               }
 
-              // Add tool results as user message
-              messages.push({ role: "user", content: toolResults });
+              executedToolCalls += toolUseBlocks.length;
+              opts.loopMessages.push({ role: "user", content: toolResults });
               accumulatedToolResults.push(...toolResults);
 
               iterations++;
+            }
+
+            // Planner ran out of tool budget mid-task: force an honest wrap-up
+            // so the owner hears what's staged vs. remaining, never silence.
+            if (exhausted && opts.tier === "planner") {
+              opts.loopMessages.push({
+                role: "user",
+                content:
+                  "<system_note>You have used the tool budget for this turn. Without calling any more tools, tell the owner exactly which actions you completed (drafts staged in their Inbox) and which parts of their request remain undone, and offer to continue in a follow-up message.</system_note>",
+              });
+
+              const wrapUp = await createSousChefMessage(
+                client,
+                {
+                  max_tokens: 1024,
+                  system: systemPrompt,
+                  tools: OWNER_TOOLS,
+                  tool_choice: { type: "none" },
+                  messages: opts.loopMessages,
+                },
+                {
+                  route: "owner-chat",
+                  restaurantId,
+                  clerkId: auth.clerkId,
+                  iteration: "wrap-up",
+                  tier: opts.tier,
+                },
+                opts.tier
+              );
+
+              modelUsed = wrapUp.model;
+              tierTokens[opts.tier].input += wrapUp.usage.input_tokens;
+              tierTokens[opts.tier].output += wrapUp.usage.output_tokens;
+
+              for (const block of wrapUp.content) {
+                if (block.type === "text" && block.text.trim()) {
+                  emit("text", { delta: block.text });
+                  accumulatedText += block.text;
+                }
+              }
+            }
+
+            return { trigger: null };
+          }
+
+          try {
+            const escalationEnabled =
+              routingEnabled && !(await isEscalationBudgetExhausted(restaurantId));
+
+            const lastAssistant = escalationEnabled
+              ? await prisma.ownerChatMessage.findFirst({
+                  where: { restaurantId, role: "assistant" },
+                  orderBy: { createdAt: "desc" },
+                  select: { model: true, createdAt: true },
+                })
+              : null;
+
+            if (escalationEnabled && shouldStartOnPlanner(lastAssistant, new Date())) {
+              // Sticky continuation of an execution flow ("yes, do it") —
+              // skip the default-tier attempt entirely.
+              emit("escalated", { reason: "continuation" });
+              await runLoop({
+                tier: "planner",
+                caps: PLANNER_CAPS,
+                escalationEnabled: false,
+                loopMessages: messages,
+              });
+            } else {
+              const outcome = await runLoop({
+                tier: "default",
+                caps: HAIKU_CAPS,
+                escalationEnabled,
+                loopMessages: messages,
+              });
+
+              if (outcome.trigger) {
+                emit("escalated", { reason: outcome.trigger });
+                try {
+                  await runLoop({
+                    tier: "planner",
+                    caps: PLANNER_CAPS,
+                    escalationEnabled: false,
+                    loopMessages: [...baseMessages],
+                  });
+                } catch (plannerError) {
+                  console.error("[owner-chat] planner failed; completing on default tier", {
+                    restaurantId,
+                    clerkId: auth.clerkId,
+                    trigger: outcome.trigger,
+                    message:
+                      plannerError instanceof Error ? plannerError.message : String(plannerError),
+                  });
+                  // Complete on the default tier with writes allowed (escalation
+                  // off prevents a re-escalation loop). Preview-first + Inbox
+                  // approval still guard every write.
+                  await runLoop({
+                    tier: "default",
+                    caps: HAIKU_CAPS,
+                    escalationEnabled: false,
+                    loopMessages: [...baseMessages],
+                  });
+                }
+              }
             }
 
             emit("done", {});
@@ -656,9 +794,7 @@ export const ownerChatRoute = new Hono<{
             console.error("[owner-chat] stream failed", {
               restaurantId,
               clerkId: auth.clerkId,
-              iterations,
-              totalInputTokens,
-              totalOutputTokens,
+              tierTokens,
               message,
               error,
             });
@@ -698,6 +834,7 @@ export const ownerChatRoute = new Hono<{
                       toolCalls: toolCallsJson,
                       toolResults: toolResultsJson,
                       source: "chat",
+                      model: modelUsed,
                     },
                   }),
                 ]);
@@ -706,15 +843,29 @@ export const ownerChatRoute = new Hono<{
               }
             }
 
-            // Log usage
-            if (totalInputTokens > 0 || totalOutputTokens > 0) {
+            // Log usage: one owner_chat row per turn (turn counter counts rows),
+            // plus a separate sonnet-priced row when the planner ran.
+            const totalTokens =
+              tierTokens.default.input +
+              tierTokens.default.output +
+              tierTokens.planner.input +
+              tierTokens.planner.output;
+            if (totalTokens > 0) {
               try {
                 await logAiUsage(
                   restaurantId,
                   "owner_chat",
-                  totalInputTokens,
-                  totalOutputTokens
+                  tierTokens.default.input,
+                  tierTokens.default.output
                 );
+                if (tierTokens.planner.input + tierTokens.planner.output > 0) {
+                  await logAiUsage(
+                    restaurantId,
+                    "owner_chat_planner",
+                    tierTokens.planner.input,
+                    tierTokens.planner.output
+                  );
+                }
               } catch (err) {
                 console.error("Failed to log owner chat usage:", err);
               }
