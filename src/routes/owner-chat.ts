@@ -559,8 +559,8 @@ export const ownerChatRoute = new Hono<{
       // the monthly turn counter (which counts rows) intact; planner tokens get
       // their own feature row priced at Sonnet rates.
       const tierTokens = {
-        default: { input: 0, output: 0 },
-        planner: { input: 0, output: 0 },
+        default: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+        planner: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
       };
       let accumulatedText = "";
       let modelUsed: string | null = null;
@@ -621,6 +621,10 @@ export const ownerChatRoute = new Hono<{
               modelUsed = response.model;
               tierTokens[opts.tier].input += response.usage.input_tokens;
               tierTokens[opts.tier].output += response.usage.output_tokens;
+              tierTokens[opts.tier].cacheWrite +=
+                response.usage.cache_creation_input_tokens ?? 0;
+              tierTokens[opts.tier].cacheRead +=
+                response.usage.cache_read_input_tokens ?? 0;
 
               const toolUseBlocks = response.content.filter(
                 (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
@@ -726,6 +730,10 @@ export const ownerChatRoute = new Hono<{
               modelUsed = wrapUp.model;
               tierTokens[opts.tier].input += wrapUp.usage.input_tokens;
               tierTokens[opts.tier].output += wrapUp.usage.output_tokens;
+              tierTokens[opts.tier].cacheWrite +=
+                wrapUp.usage.cache_creation_input_tokens ?? 0;
+              tierTokens[opts.tier].cacheRead +=
+                wrapUp.usage.cache_read_input_tokens ?? 0;
 
               for (const block of wrapUp.content) {
                 if (block.type === "text" && block.text.trim()) {
@@ -859,22 +867,42 @@ export const ownerChatRoute = new Hono<{
             const totalTokens =
               tierTokens.default.input +
               tierTokens.default.output +
+              tierTokens.default.cacheWrite +
+              tierTokens.default.cacheRead +
               tierTokens.planner.input +
-              tierTokens.planner.output;
+              tierTokens.planner.output +
+              tierTokens.planner.cacheWrite +
+              tierTokens.planner.cacheRead;
             if (totalTokens > 0) {
               try {
                 await logAiUsage(
                   restaurantId,
                   "owner_chat",
                   tierTokens.default.input,
-                  tierTokens.default.output
+                  tierTokens.default.output,
+                  0,
+                  {
+                    cacheWriteTokens: tierTokens.default.cacheWrite,
+                    cacheReadTokens: tierTokens.default.cacheRead,
+                  }
                 );
-                if (tierTokens.planner.input + tierTokens.planner.output > 0) {
+                if (
+                  tierTokens.planner.input +
+                    tierTokens.planner.output +
+                    tierTokens.planner.cacheWrite +
+                    tierTokens.planner.cacheRead >
+                  0
+                ) {
                   await logAiUsage(
                     restaurantId,
                     "owner_chat_planner",
                     tierTokens.planner.input,
-                    tierTokens.planner.output
+                    tierTokens.planner.output,
+                    0,
+                    {
+                      cacheWriteTokens: tierTokens.planner.cacheWrite,
+                      cacheReadTokens: tierTokens.planner.cacheRead,
+                    }
                   );
                 }
               } catch (err) {

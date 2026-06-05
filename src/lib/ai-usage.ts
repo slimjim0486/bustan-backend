@@ -45,14 +45,24 @@ function getTokenPricing(feature: AiFeature) {
   }
 }
 
+export interface CacheTokenUsage {
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+}
+
 export function estimateAiUsageCost(
   feature: AiFeature,
   tokensIn: number,
   tokensOut: number,
-  extraCostUsd = 0
+  extraCostUsd = 0,
+  cache?: CacheTokenUsage
 ) {
   const pricing = getTokenPricing(feature);
-  return tokensIn * pricing.input + tokensOut * pricing.output + extraCostUsd;
+  // Anthropic prompt caching: writes 1.25x input rate, reads 0.1x.
+  const cacheCost = cache
+    ? cache.cacheWriteTokens * pricing.input * 1.25 + cache.cacheReadTokens * pricing.input * 0.1
+    : 0;
+  return tokensIn * pricing.input + tokensOut * pricing.output + extraCostUsd + cacheCost;
 }
 
 export async function checkAiLimit(
@@ -87,9 +97,10 @@ export async function logAiUsage(
   feature: AiFeature,
   tokensIn: number,
   tokensOut: number,
-  extraCostUsd = 0
+  extraCostUsd = 0,
+  cache?: CacheTokenUsage
 ) {
-  const costUsd = estimateAiUsageCost(feature, tokensIn, tokensOut, extraCostUsd);
+  const costUsd = estimateAiUsageCost(feature, tokensIn, tokensOut, extraCostUsd, cache);
 
   await prisma.aiUsageLog.create({
     data: {
