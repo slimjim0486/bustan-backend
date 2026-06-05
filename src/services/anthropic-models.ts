@@ -21,6 +21,17 @@ export function getSousChefModelCandidates() {
   return unique([configured, ...fallbackModels]);
 }
 
+export const DEFAULT_SOUS_CHEF_PLANNER_MODEL = "claude-sonnet-4-6";
+
+export function getSousChefPlannerCandidates() {
+  const configured = env.SOUS_CHEF_PLANNER_MODEL.trim() || DEFAULT_SOUS_CHEF_PLANNER_MODEL;
+  // Planner falls back through Sonnet to the default-tier chain so a model
+  // outage degrades quality, never availability.
+  return unique([configured, DEFAULT_SOUS_CHEF_PLANNER_MODEL, ...getSousChefModelCandidates()]);
+}
+
+export type SousChefModelTier = "default" | "planner";
+
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -40,9 +51,11 @@ export function isAnthropicModelNotFound(error: unknown) {
 export async function createSousChefMessage(
   client: Anthropic,
   params: Omit<Anthropic.MessageCreateParamsNonStreaming, "model">,
-  context: Record<string, unknown> = {}
+  context: Record<string, unknown> = {},
+  tier: SousChefModelTier = "default"
 ) {
-  const candidates = getSousChefModelCandidates();
+  const candidates =
+    tier === "planner" ? getSousChefPlannerCandidates() : getSousChefModelCandidates();
 
   for (let index = 0; index < candidates.length; index += 1) {
     const model = candidates[index];
