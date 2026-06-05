@@ -314,6 +314,7 @@ model Restaurant {
   sabtPackEnabled      Boolean            @default(true) @map("sabt_pack_enabled")
   eventCalendarEnabled Boolean            @default(true) @map("event_calendar_enabled")
   ordersV1Enabled      Boolean            @default(false) @map("orders_v1_enabled")
+  sousChefRoutingEnabled Boolean          @default(false) @map("sous_chef_routing_enabled")
   ownerId              String             @map("owner_user_id")
   operatorAccountId    String?            @map("operator_account_id")
   createdAt            DateTime           @default(now()) @map("created_at")
@@ -1748,6 +1749,7 @@ model OwnerChatMessage {
   toolResults  Json?    @map("tool_results") // serialized tool_result blocks
   authorUserId String?  @map("author_user_id") // clerkId for user messages; null otherwise
   source       String   @default("chat") // "chat" | "whisper" | "system"
+  model        String?  // Anthropic model id that authored an assistant message; null for user/system rows and pre-routing history
   whisperId    String?  @map("whisper_id") // optional link back to OwnerWhisper
   createdAt    DateTime @default(now()) @map("created_at")
 
