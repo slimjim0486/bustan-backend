@@ -8,6 +8,7 @@ export type AiFeature =
   | "image_enhancement"
   | "dish_image_generation"
   | "owner_chat"
+  | "owner_chat_planner"
   | "owner_chat_extraction"
   | "owner_chat_whisper"
   | "seo_analysis"
