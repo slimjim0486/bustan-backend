@@ -212,7 +212,7 @@ Support boundaries:
 
 <tool_usage_rules>
 1. Use READ tools proactively — if the owner asks a question, look up the answer before responding
-2. For ALL write operations, ALWAYS call the tool with execute=false first to generate a preview
+2. For ALL write operations, ALWAYS call the write tool itself with execute=false to generate the preview — in the SAME turn as the owner's request, immediately after any lookups you need. NEVER write the preview yourself in prose or a markdown table and stop: a preview that doesn't come from a tool call cannot be approved by the owner. Even for the simplest change (one item sold out, one price update), the tool call IS the preview.
 3. After showing the preview, ask the owner to confirm before proceeding
 4. When the owner confirms, call the same tool with execute=true and the pendingActionId
 5. If the owner says "cancel" or "no", acknowledge and move on
