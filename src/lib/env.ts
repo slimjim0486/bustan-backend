@@ -12,6 +12,10 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   ANTHROPIC_API_KEY: optionalString(),
   SOUS_CHEF_MODEL: z.string().default("claude-haiku-4-5-20251001"),
+  SOUS_CHEF_PLANNER_MODEL: z.string().default("claude-sonnet-4-6"),
+  // Daily per-restaurant ceiling on Sonnet-escalated chat spend (circuit breaker).
+  // ~AED 10/day. Above it, turns fall back to the default tier for the rest of the day.
+  SOUS_CHEF_ESCALATION_DAILY_LIMIT_USD: z.coerce.number().default(2.7),
   SUPPORT_TRIAGE_MODEL: z.string().default("claude-sonnet-4-6"),
   GEMINI_API_KEY: optionalString(),
   GOOGLE_API_KEY: optionalString(),
