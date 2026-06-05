@@ -59,6 +59,31 @@ export interface ToolResult {
   draftId?: string;
 }
 
+// Structured, self-correctable lookup error: gives the model the found/missing
+// split plus real candidates so it can retry inside the loop instead of giving up.
+async function buildItemNotFoundResult(
+  restaurantId: string,
+  requestedIds: string[],
+  foundItems: Array<{ id: string; name: string }>
+): Promise<ToolResult> {
+  const missing = requestedIds.filter((id) => !foundItems.some((item) => item.id === id));
+  const suggestions = await prisma.menuItem.findMany({
+    where: { restaurantId },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+    take: 10,
+  });
+  return {
+    content: JSON.stringify({
+      error: "item_not_found",
+      missing_item_ids: missing,
+      found: foundItems.map((i) => ({ id: i.id, name: i.name })),
+      did_you_mean: suggestions,
+      hint: "Re-check the IDs with search_menu_items, or pick the intended items from did_you_mean and retry.",
+    }),
+  };
+}
+
 // ── Tool Definitions ───────────────────────────────────────────
 
 export const OWNER_TOOLS: Anthropic.Tool[] = [
@@ -322,7 +347,7 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
   {
     name: "create_promotion",
     description:
-      "Create a new promotion (discounted item, deal, or combo) with optional AI-generated copy. When the owner names a calendar event (Ramadan, Eid, National Day, Mother's Day, etc.), pass moment_id to tie the promo to that moment — starts_at/ends_at will auto-fill from the moment's date range. When the owner states a percentage off (\"15% off\", \"20%\"), prefer discount_percent over promo_price; the server computes the absolute promo price from the item's current price.",
+      "Create a new promotion (discounted item, deal, or combo) with optional AI-generated copy. When the owner names a calendar event (Ramadan, Eid, National Day, Mother's Day, etc.), pass moment_id to tie the promo to that moment — starts_at/ends_at will auto-fill from the moment's date range. When the owner states a percentage off (\"15% off\", \"20%\"), prefer discount_percent over promo_price; the server computes the absolute promo price from the item's current price. For \"X% off item A and item B\" as ONE combined offer, create a single deal promotion with both item_ids — the promo price is computed off the summed item prices. If the owner wants each item discounted separately, create one discounted_item promotion per item and confirm that interpretation first.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -645,6 +670,21 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
   // one parent DraftAction. The owner approves the bundle and every child
   // ships atomically at the same shipAt.
   {
+    name: "escalate_to_planner",
+    description:
+      "Hand off to deeper planning. Call this FIRST — alone, before any other tool — when the owner's request needs multiple coordinated changes in one go (e.g. \"set up my Eid push: discount the platters, rewrite their descriptions, and feature them\"). Do not call it for single actions or pure questions. Calling it restarts the turn with a larger tool budget.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        reason: {
+          type: "string",
+          description: "One sentence on why this needs multi-step planning.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: "plan_marketing_week",
     description:
       "Plan a coordinated marketing bundle for the next 7 days. Reads upcoming event-calendar moments, recent menu performance, and customer segments. Drafts a parent 'marketing_bundle' with child drafts for an ad campaign (if a moment is in the prep window), a WhatsApp blast (if there are lapsed regulars), and a featured promotion. Owner reviews the bundle and Ships All — every child fires at the same time. Use when the owner asks 'plan my week', 'set up weekend marketing', or anything about coordinated multi-channel campaigns.",
@@ -884,6 +924,14 @@ export async function executeTool(
       // Macro tools — produce bundles
       case "plan_marketing_week":
         return await execPlanMarketingWeek(restaurantId, clerkId, input);
+
+      case "escalate_to_planner":
+        return {
+          content: JSON.stringify({
+            acknowledged: true,
+            note: "Planning mode is already active. Proceed with the owner's request step by step; do not call escalate_to_planner again.",
+          }),
+        };
 
       default:
         return { content: JSON.stringify({ error: `Unknown tool: ${toolName}` }) };
@@ -2052,7 +2100,7 @@ async function execUpdateMenuItem(
   });
 
   if (!item || item.restaurantId !== restaurantId) {
-    return { content: JSON.stringify({ error: "Menu item not found." }) };
+    return await buildItemNotFoundResult(restaurantId, [itemId], []);
   }
 
   const changes: Array<{ label: string; before: string | null; after: string }> = [];
@@ -2311,8 +2359,8 @@ async function execCreatePromotion(
     include: { section: { select: { name: true } } },
   });
 
-  if (items.length === 0) {
-    return { content: JSON.stringify({ error: "No valid menu items found." }) };
+  if (items.length < itemIds.length) {
+    return await buildItemNotFoundResult(restaurantId, itemIds, items);
   }
 
   // Resolve calendar moment (if any). Defaults dates to the moment's next-upcoming
@@ -2563,6 +2611,14 @@ async function execToggleAvailability(
     where: { id: { in: itemIds }, restaurantId },
     select: { id: true, name: true, isAvailable: true },
   });
+
+  if (items.length < itemIds.length) {
+    return await buildItemNotFoundResult(
+      restaurantId,
+      itemIds,
+      items.map((i) => ({ id: i.id, name: i.name }))
+    );
+  }
 
   const pendingActionId = createPendingAction(restaurantId, clerkId, "toggle_availability", input, null);
 
