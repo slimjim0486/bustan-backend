@@ -20,7 +20,9 @@
     "coworker:submit-templates": "tsx scripts/coworker-submit-templates.ts",
     "backfill:staged-draft-hero-dish": "tsx scripts/backfill-staged-draft-hero-dish.ts",
     "backfill:dedupe-drafts": "tsx scripts/backfill-dedupe-resurrected-drafts.ts",
-    "backfill:legacy-consent": "tsx scripts/backfill-legacy-consent.ts"
+    "backfill:legacy-consent": "tsx scripts/backfill-legacy-consent.ts",
+    "eval:sous-chef:seed": "tsx evals/sous-chef/seed-eval-restaurant.ts",
+    "eval:sous-chef": "tsx evals/sous-chef/run-evals.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
