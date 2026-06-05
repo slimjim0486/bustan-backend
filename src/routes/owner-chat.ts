@@ -564,18 +564,29 @@ export const ownerChatRoute = new Hono<{
       };
       let accumulatedText = "";
       let modelUsed: string | null = null;
+      // Best-effort telemetry, not a replayable transcript: on escalation or
+      // planner-failure fallback these can interleave calls from more than one
+      // attempt. They are persisted for audit/debugging only.
       const accumulatedToolCalls: Anthropic.ToolUseBlock[] = [];
       const accumulatedToolResults: Anthropic.ToolResultBlockParam[] = [];
 
       // Frozen baseline for planner re-runs — loops mutate their own copy.
       const baseMessages = [...messages];
 
+      let closed = false;
+
       const stream = new ReadableStream({
         async start(controller) {
           const encoder = new TextEncoder();
 
           function emit(event: string, data: unknown) {
-            controller.enqueue(encoder.encode(sseEvent(event, data)));
+            if (closed) return;
+            try {
+              controller.enqueue(encoder.encode(sseEvent(event, data)));
+            } catch {
+              // Client disconnected mid-stream; stop emitting, let work finish.
+              closed = true;
+            }
           }
 
           async function runLoop(opts: {
@@ -871,8 +882,19 @@ export const ownerChatRoute = new Hono<{
               }
             }
 
-            controller.close();
+            if (!closed) {
+              try {
+                controller.close();
+              } catch {
+                // Stream already errored/cancelled — persistence above still ran.
+              }
+            }
           }
+        },
+        cancel() {
+          // Owner closed the dock / navigated away; in-flight model + tool work
+          // will finish (and persist) but stops emitting.
+          closed = true;
         },
       });
 
