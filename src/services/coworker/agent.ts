@@ -171,6 +171,8 @@ export async function runAgentTurn(input: AgentInput): Promise<AgentReply> {
   const client = getClient();
   let totalIn = 0;
   let totalOut = 0;
+  let totalCacheWrite = 0;
+  let totalCacheRead = 0;
   let assistantText = "";
   let iterations = 0;
 
@@ -188,6 +190,8 @@ export async function runAgentTurn(input: AgentInput): Promise<AgentReply> {
 
     totalIn += response.usage.input_tokens;
     totalOut += response.usage.output_tokens;
+    totalCacheWrite += response.usage.cache_creation_input_tokens ?? 0;
+    totalCacheRead += response.usage.cache_read_input_tokens ?? 0;
 
     for (const block of response.content) {
       if (block.type === "text" && block.text.trim()) {
@@ -226,7 +230,10 @@ export async function runAgentTurn(input: AgentInput): Promise<AgentReply> {
   const finalText = clampReply(assistantText) ||
     "I'm here — but didn't catch that. Try asking me something specific, like 'how did Karama do yesterday?'";
 
-  const costUsd = estimateAiUsageCost("owner_chat", totalIn, totalOut);
+  const costUsd = estimateAiUsageCost("owner_chat", totalIn, totalOut, 0, {
+    cacheWriteTokens: totalCacheWrite,
+    cacheReadTokens: totalCacheRead,
+  });
 
   // Persist into the SAME owner chat thread so the dashboard sees this turn
   // too. source="whisper" is the existing schema value used for non-chat
@@ -257,7 +264,10 @@ export async function runAgentTurn(input: AgentInput): Promise<AgentReply> {
 
   if (totalIn > 0 || totalOut > 0) {
     try {
-      await logAiUsage(input.restaurantId, "owner_chat", totalIn, totalOut);
+      await logAiUsage(input.restaurantId, "owner_chat", totalIn, totalOut, 0, {
+        cacheWriteTokens: totalCacheWrite,
+        cacheReadTokens: totalCacheRead,
+      });
     } catch (e) {
       console.error("[coworker-agent] usage log failed", e);
     }
