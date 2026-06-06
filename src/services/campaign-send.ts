@@ -16,6 +16,10 @@ import {
 
 export type CampaignSegmentType = "inactive_30" | "weekend_special" | "new_promotion";
 
+// Candidate batch ceiling per send run (pre-existing from the CRM route). Well below the
+// WHATSAPP_DAILY_TIER_LIMIT — bounds the per-run Meta loop, not tier safety.
+const CAMPAIGN_CANDIDATE_CAP = 100;
+
 export interface CampaignSendOptions {
   restaurantId: string;
   restaurantName: string;
@@ -99,6 +103,11 @@ export function getCampaignDeliveryMode(input: {
     : "whatsapp_link";
 }
 
+/**
+ * Trusts its caller: assumes auth + ownership of restaurantId are already
+ * verified and applies no rate limiting. Route callers go through requireAuth +
+ * getOwnedRestaurant; DraftAction ship callers inherit the draft's verified owner.
+ */
 export async function executeCampaignSend(
   options: CampaignSendOptions
 ): Promise<CampaignSendResult> {
@@ -174,7 +183,7 @@ export async function executeCampaignSend(
     prisma.customer.findMany({
       where: customerWhere,
       orderBy: [{ lastOrderAt: "asc" }, { createdAt: "asc" }],
-      take: 100,
+      take: CAMPAIGN_CANDIDATE_CAP,
       include: {
         consents: {
           orderBy: { createdAt: "desc" },
@@ -531,6 +540,7 @@ export async function resolveCampaignAudience(options: {
 }): Promise<{
   eligibleCount: number;
   optedInTotal: number;
+  capped: boolean;
   mode: "meta_cloud_api" | "whatsapp_link";
   templateStatus: string | null;
 }> {
@@ -566,11 +576,15 @@ export async function resolveCampaignAudience(options: {
         }
       : baseWhere;
 
+  // KEEP IN LOCKSTEP with executeCampaignSend's candidate selection above — same
+  // baseWhere/customerWhere, same orderBy/take, same consents include, same
+  // isMarketingEligible precedence filter. If you change one, change both; drift
+  // here re-opens the C6 preview-vs-send mismatch this module exists to prevent.
   const [candidates, optedInTotal] = await Promise.all([
     prisma.customer.findMany({
       where: customerWhere,
       orderBy: [{ lastOrderAt: "asc" }, { createdAt: "asc" }],
-      take: 100,
+      take: CAMPAIGN_CANDIDATE_CAP,
       include: {
         consents: {
           orderBy: { createdAt: "desc" },
@@ -592,6 +606,7 @@ export async function resolveCampaignAudience(options: {
   return {
     eligibleCount: customers.length,
     optedInTotal,
+    capped: customers.length === CAMPAIGN_CANDIDATE_CAP && optedInTotal > CAMPAIGN_CANDIDATE_CAP,
     mode,
     templateStatus: templateRecord?.status ?? null,
   };
