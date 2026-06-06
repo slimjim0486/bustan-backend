@@ -1525,7 +1525,7 @@ async function shipDishImagesGenerate(draft: DraftAction): Promise<ShipResult> {
           menuItemId: item.id,
           imageId: image.id,
           priority: ents.imageGenerationPriority,
-          allowFallback: true,
+          // allowFallback intentionally omitted — defer to GOOGLE_IMAGE_ALLOW_FALLBACK, same as the dashboard route.
         });
       } catch (enqueueError) {
         await prisma.$transaction(async (tx) => {
