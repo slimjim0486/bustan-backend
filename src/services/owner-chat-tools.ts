@@ -433,6 +433,21 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "generate_dish_images",
+    description:
+      "Generate AI photos for menu items (max 15 per request). Call when the owner wants dish photos created (\"generate photos for items missing images\"). Pass specific menu_item_ids, or missing_only=true to target items with no usable image. Counts against the monthly image generation quota. Each approved image generates in the background (~1 min each).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        menu_item_ids: { type: "array", items: { type: "string" }, description: "Specific items. Max 15." },
+        missing_only: { type: "boolean", description: "Target items with no usable image instead of naming ids." },
+        limit: { type: "number", description: "With missing_only: cap how many (default 10, max 15)." },
+        prompt_modifier: { type: "string", description: "Optional style hint, e.g. \"dark moody lighting\"." },
+      },
+      required: [],
+    },
+  },
+  {
     name: "toggle_availability",
     description:
       "Mark menu items as sold out or available.",
@@ -925,6 +940,8 @@ export async function executeTool(
         return await execSendWhatsappCampaign(restaurantId, clerkId, input);
       case "create_ad_campaign":
         return await execCreateAdCampaign(restaurantId, clerkId, entitlements, input);
+      case "generate_dish_images":
+        return await execGenerateDishImages(restaurantId, clerkId, entitlements, input);
       case "toggle_availability":
         return await execToggleAvailability(restaurantId, clerkId, input);
       case "create_menu_item":
@@ -2975,6 +2992,86 @@ async function execCreateAdCampaign(
       success: true,
       draft_id: draft.id,
       message: `Drafted ad campaign "${brief.name}" (AED ${brief.budgetAed}, ${brief.goal}). On approval the project is created and ad variants start generating in Ad Studio.`,
+    }),
+    draftId: draft.id,
+  };
+}
+
+async function execGenerateDishImages(
+  restaurantId: string,
+  clerkId: string,
+  entitlements: PlanEntitlements,
+  input: Input
+): Promise<ToolResult> {
+  const PER_DRAFT_CAP = 15;
+
+  let items: Array<{ id: string; name: string }> = [];
+  if (Array.isArray(input.menu_item_ids) && input.menu_item_ids.length > 0) {
+    const requested = (input.menu_item_ids as string[]).map(String);
+    if (requested.length > PER_DRAFT_CAP) {
+      return { content: JSON.stringify({ error: `Max ${PER_DRAFT_CAP} images per request. Split into batches.` }) };
+    }
+    const found = await prisma.menuItem.findMany({
+      where: { id: { in: requested }, restaurantId },
+      select: { id: true, name: true },
+    });
+    if (found.length < requested.length) {
+      return await buildItemNotFoundResult(restaurantId, requested, found);
+    }
+    items = found;
+  } else if (input.missing_only) {
+    const limit = Math.min(Math.max(Number(input.limit ?? 10) || 10, 1), PER_DRAFT_CAP);
+    items = await prisma.menuItem.findMany({
+      where: { restaurantId, imageStatus: { in: ["none", "failed"] } },
+      select: { id: true, name: true },
+      orderBy: { displayOrder: "asc" },
+      take: limit,
+    });
+    if (items.length === 0) {
+      return { content: JSON.stringify({ success: true, message: "Every menu item already has an image — nothing to generate." }) };
+    }
+  } else {
+    return { content: JSON.stringify({ error: "Pass menu_item_ids or missing_only=true." }) };
+  }
+
+  const usage = await checkAiLimit(restaurantId, "dish_image_generation", entitlements.dishImageGenerationLimit);
+  const remaining = usage.remaining ?? Number.MAX_SAFE_INTEGER;
+  if (remaining < items.length) {
+    return {
+      content: JSON.stringify({
+        error: "quota_exhausted",
+        requested: items.length,
+        remaining,
+        hint: remaining > 0 ? `Only ${remaining} generations left this month — propose a batch of ${remaining}.` : "Monthly image generation limit reached; resets next month.",
+      }),
+    };
+  }
+
+  const draft = await createDraft(restaurantId, clerkId, {
+    kind: DraftActionKind.bulk,
+    actionType: "dish_images_generate",
+    source: DraftActionSource.chat,
+    title: `Generate ${items.length} dish photo${items.length === 1 ? "" : "s"}`,
+    subtitle: items.map((i) => i.name).slice(0, 3).join(", ") + (items.length > 3 ? `, +${items.length - 3} more` : ""),
+    iconKey: "image",
+    affectedSurface: "/dashboard/menu",
+    childCount: items.length,
+    payload: {
+      menuItemIds: items.map((i) => i.id),
+      promptModifier: input.prompt_modifier ? String(input.prompt_modifier) : null,
+    },
+    preview: {
+      items: items.map((i) => i.name),
+      quotaRemainingAfter: remaining === Number.MAX_SAFE_INTEGER ? null : remaining - items.length,
+    },
+  });
+
+  return {
+    content: JSON.stringify({
+      success: true,
+      draft_id: draft.id,
+      count: items.length,
+      message: `Drafted photo generation for ${items.length} item(s) — generation starts after Inbox approval.`,
     }),
     draftId: draft.id,
   };

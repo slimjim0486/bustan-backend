@@ -18,6 +18,13 @@ import {
   enforceGlobalBudget,
 } from "@/services/ad-studio-ai/guards";
 import { enqueueAdStudioGeneration } from "@/queue/ad-studio-jobs";
+import { checkAiLimit, logAiUsage } from "@/lib/ai-usage";
+import { enqueueMenuItemImage } from "@/queue/image-generation";
+import {
+  ensurePrimaryImageRecord,
+  getNextImageSlot,
+  syncMenuItemImageSummary,
+} from "@/lib/menu-item-images";
 
 // 14-day TTL for drafts that sit in pending without a decision.
 const DEFAULT_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -658,6 +665,8 @@ async function dispatchShip(draft: DraftAction): Promise<ShipResult> {
       return shipAdCampaignCreate(draft);
     case "ad_campaign_create_and_generate":
       return shipAdCampaignCreateAndGenerate(draft);
+    case "dish_images_generate":
+      return shipDishImagesGenerate(draft);
     case "whatsapp_campaign_create":
       return shipWhatsappCampaignCreate(draft);
     case "whatsapp_campaign_send":
@@ -1437,6 +1446,110 @@ async function shipAdCampaignCreateAndGenerate(draft: DraftAction): Promise<Ship
     ok: true,
     message: `Ad campaign "${project.name}" created — generating ${numberOfVariants} variants in Ad Studio.`,
     data: { adProjectId: project.id },
+  };
+}
+
+interface DishImagesGeneratePayload {
+  menuItemIds: string[];
+  promptModifier: string | null;
+}
+
+/**
+ * Queues one AI image generation per menu item. Mirrors the single-image route
+ * (POST /ai/generate-image) per item: stage a "none" MenuItemImage row inside a
+ * transaction, enqueue, then flip the row to "generating" + sync the item
+ * summary. The enqueue happens BEFORE the status flip and, on failure, the row
+ * is deleted (compensating cleanup) so a failed enqueue never leaves a phantom
+ * pending image — exactly as the route does.
+ *
+ * Quota is re-checked at ship; if the remaining allowance dropped below the
+ * drafted batch size since drafting, the whole batch is refused (no partial
+ * fulfillment) and the owner is told to ask for a smaller batch.
+ */
+async function shipDishImagesGenerate(draft: DraftAction): Promise<ShipResult> {
+  const payload = draft.payload as unknown as DishImagesGeneratePayload;
+  if (!payload?.menuItemIds?.length) {
+    throw new Error("dish_images_generate payload missing menuItemIds");
+  }
+
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: draft.restaurantId },
+    include: { subscription: true },
+  });
+  if (!restaurant) return { ok: false, message: "Restaurant not found." };
+  const ents = getRestaurantEntitlements(restaurant);
+
+  const usage = await checkAiLimit(draft.restaurantId, "dish_image_generation", ents.dishImageGenerationLimit);
+  const remaining = usage.remaining ?? Number.MAX_SAFE_INTEGER;
+  if (remaining < payload.menuItemIds.length) {
+    return { ok: false, message: `Image quota changed since drafting — ${remaining} generations remain but ${payload.menuItemIds.length} were requested. Ask Sous Chef for a smaller batch.` };
+  }
+
+  let queued = 0;
+  const failures: string[] = [];
+  for (const menuItemId of payload.menuItemIds) {
+    try {
+      const item = await prisma.menuItem.findFirst({
+        where: { id: menuItemId, restaurantId: draft.restaurantId },
+        select: { id: true, name: true },
+      });
+      if (!item) { failures.push(menuItemId); continue; }
+
+      const image = await prisma.$transaction(async (tx) => {
+        const prepared = await ensurePrimaryImageRecord(tx, item.id);
+        const images = prepared?.images ?? [];
+        if (images.some((img) => img.imageStatus === "none" || img.imageStatus === "generating")) {
+          return null; // generation already pending — skip, not an error
+        }
+        const nextSlot = getNextImageSlot(images);
+        if (nextSlot === null) return null; // variant limit reached
+        return tx.menuItemImage.create({
+          data: {
+            menuItemId: item.id,
+            slot: nextSlot,
+            promptModifier: payload.promptModifier,
+            imageStatus: "none",
+            isPrimary: images.length === 0,
+            originType: "bustan_ai",
+            derivationType: "synthetic_generation",
+            parentImageId: null,
+          },
+        });
+      });
+      if (!image) { failures.push(item.name); continue; }
+
+      // Enqueue BEFORE flipping to "generating"; on enqueue failure delete the
+      // staged row and resync so we never leave a phantom pending image.
+      try {
+        await enqueueMenuItemImage({
+          menuItemId: item.id,
+          imageId: image.id,
+          priority: ents.imageGenerationPriority,
+          allowFallback: true,
+        });
+      } catch (enqueueError) {
+        await prisma.$transaction(async (tx) => {
+          await tx.menuItemImage.delete({ where: { id: image.id } });
+          await syncMenuItemImageSummary(tx, item.id);
+        });
+        throw enqueueError;
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.menuItemImage.update({ where: { id: image.id }, data: { imageStatus: "generating" } });
+        await syncMenuItemImageSummary(tx, item.id);
+      });
+      await logAiUsage(draft.restaurantId, "dish_image_generation", 0, 0, 0.04);
+      queued += 1;
+    } catch {
+      failures.push(menuItemId);
+    }
+  }
+
+  return {
+    ok: queued > 0,
+    message: `Generating ${queued} dish photo${queued === 1 ? "" : "s"}${failures.length ? ` (${failures.length} skipped)` : ""} — they'll appear on the menu as they finish.`,
+    data: { queued, skipped: failures.length },
   };
 }
 
