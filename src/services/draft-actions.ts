@@ -11,6 +11,13 @@ import { DraftActionKind, DraftActionStatus, DraftActionSource, Prisma } from "@
 import { ApiError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { executeCampaignSend } from "@/services/campaign-send";
+import { getRestaurantEntitlements } from "@/lib/entitlements";
+import { briefInputSchema } from "@/services/ad-studio-ai";
+import {
+  enforceGenerateRateLimit,
+  enforceGlobalBudget,
+} from "@/services/ad-studio-ai/guards";
+import { enqueueAdStudioGeneration } from "@/queue/ad-studio-jobs";
 
 // 14-day TTL for drafts that sit in pending without a decision.
 const DEFAULT_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -649,6 +656,8 @@ async function dispatchShip(draft: DraftAction): Promise<ShipResult> {
       return shipReviewAcknowledgment(draft);
     case "ad_campaign_create":
       return shipAdCampaignCreate(draft);
+    case "ad_campaign_create_and_generate":
+      return shipAdCampaignCreateAndGenerate(draft);
     case "whatsapp_campaign_create":
       return shipWhatsappCampaignCreate(draft);
     case "whatsapp_campaign_send":
@@ -1291,6 +1300,122 @@ async function shipAdCampaignCreate(draft: DraftAction): Promise<ShipResult> {
     ok: true,
     message: `Ad campaign "${project.name}" created — open Ad Studio to generate`,
     data: { adProjectId: project.id, reusedExisting: false },
+  };
+}
+
+interface AdCampaignCreateAndGeneratePayload {
+  brief: Record<string, unknown> & { name: string; budgetAed: number };
+  sourceMomentId?: string | null;
+  sourceMomentYear?: number | null;
+  sourceMomentStartsOn?: string | null;
+}
+
+/**
+ * Chat-initiated ad campaign that, on approval, BOTH creates the AdProject and
+ * kicks off creative generation — the owner reviews finished variants in Ad
+ * Studio rather than clicking Generate themselves. Distinct from
+ * `ad_campaign_create` (bundle/event path, draft-only, no auto-generate).
+ */
+async function shipAdCampaignCreateAndGenerate(draft: DraftAction): Promise<ShipResult> {
+  const payload = draft.payload as unknown as AdCampaignCreateAndGeneratePayload;
+  if (!payload?.brief?.name) {
+    throw new Error("ad_campaign_create_and_generate payload missing brief");
+  }
+
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: draft.restaurantId },
+    include: { subscription: true },
+  });
+  if (!restaurant) {
+    return { ok: false, message: "Restaurant not found." };
+  }
+  const ents = getRestaurantEntitlements(restaurant);
+
+  // Re-check quota at ship time (may have been consumed during the grace window).
+  if (ents.adProjectMonthlyLimit !== null) {
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const created = await prisma.adProject.count({
+      where: { restaurantId: draft.restaurantId, createdAt: { gte: monthStart } },
+    });
+    if (created >= ents.adProjectMonthlyLimit) {
+      return { ok: false, message: "Monthly ad project limit reached since this draft was created." };
+    }
+  }
+
+  const parsed = briefInputSchema.parse({ ...payload.brief, restaurantId: draft.restaurantId });
+
+  // Guard against the (restaurantId, sourceMomentId, sourceMomentYear) unique
+  // constraint — the event-stager cron may have already staged a project for
+  // this moment. Reuse it (flip to generating) rather than crashing on a P2002.
+  if (payload.sourceMomentId && payload.sourceMomentYear) {
+    const existing = await prisma.adProject.findUnique({
+      where: {
+        uniq_event_stage_per_moment: {
+          restaurantId: draft.restaurantId,
+          sourceMomentId: payload.sourceMomentId,
+          sourceMomentYear: payload.sourceMomentYear,
+        },
+      },
+      select: { id: true, name: true, status: true },
+    });
+    if (existing) {
+      await enforceGlobalBudget();
+      await enforceGenerateRateLimit(draft.restaurantId);
+      const flipped = await prisma.adProject.updateMany({
+        where: { id: existing.id, status: { not: "generating" } },
+        data: { status: "generating", lastError: null },
+      });
+      if (flipped.count === 0) {
+        return {
+          ok: true,
+          message: `Ad campaign "${existing.name}" is already generating in Ad Studio.`,
+          data: { adProjectId: existing.id, reusedExisting: true },
+        };
+      }
+      const numberOfVariants = Math.min(Math.max(ents.adGenerationsPerProject, 1), 6);
+      await enqueueAdStudioGeneration({ projectId: existing.id, numberOfVariants });
+      return {
+        ok: true,
+        message: `Ad campaign "${existing.name}" — generating ${numberOfVariants} variants in Ad Studio.`,
+        data: { adProjectId: existing.id, reusedExisting: true },
+      };
+    }
+  }
+
+  await enforceGlobalBudget();
+  await enforceGenerateRateLimit(draft.restaurantId);
+
+  const project = await prisma.adProject.create({
+    data: {
+      restaurantId: draft.restaurantId,
+      name: parsed.name,
+      campaignType: parsed.campaignType,
+      goal: parsed.goal,
+      countries: parsed.countries,
+      cuisines: parsed.cuisines,
+      targetPlatforms: parsed.targetPlatforms,
+      budgetTier: parsed.budgetTier,
+      budgetAed: parsed.budgetAed,
+      durationWeeks: parsed.durationWeeks ?? null,
+      primaryDishId: parsed.primaryDishId ?? null,
+      brandVoice: parsed.brandVoice ?? null,
+      status: "generating",
+      briefJson: parsed as unknown as Prisma.InputJsonValue,
+      sourceMomentId: payload.sourceMomentId ?? null,
+      sourceMomentYear: payload.sourceMomentYear ?? null,
+      sourceMomentStartsOn: payload.sourceMomentStartsOn ? new Date(payload.sourceMomentStartsOn) : null,
+    },
+  });
+
+  const numberOfVariants = Math.min(Math.max(ents.adGenerationsPerProject, 1), 6);
+  await enqueueAdStudioGeneration({ projectId: project.id, numberOfVariants });
+
+  return {
+    ok: true,
+    message: `Ad campaign "${project.name}" created — generating ${numberOfVariants} variants in Ad Studio.`,
+    data: { adProjectId: project.id },
   };
 }
 

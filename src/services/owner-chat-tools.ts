@@ -30,6 +30,7 @@ import {
   calendarMoments,
   resolveUpcomingMomentOccurrence,
 } from "@/services/ad-studio/calendar";
+import { briefInputSchema } from "@/services/ad-studio-ai";
 import type {
   CompetitorChanges,
   MenuItemSignal,
@@ -410,6 +411,25 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
         promotion_id: { type: "string", description: "Promotion to feature (required for new_promotion segment)." },
       },
       required: ["segment"],
+    },
+  },
+  {
+    name: "create_ad_campaign",
+    description:
+      "Create an Ad Studio campaign project and generate ad creatives for it. Call when the owner wants ads made (\"set up a Ramadan campaign\", \"make ads for my new burger\"). Approval creates the project AND starts generating ad variants the owner reviews in Ad Studio. Counts against the monthly ad project quota. If the owner names a calendar event, you may pass moment_id (see list_calendar_moments).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", description: "Campaign name, e.g. \"Ramadan Iftar Push\"." },
+        campaign_brief: { type: "string", description: "1-3 sentences on what the campaign should achieve and feature." },
+        goal: { type: "string", enum: ["tofu", "mofu", "bofu", "retention"], description: "tofu=awareness, mofu=consideration, bofu=orders now, retention=repeat customers. Default bofu." },
+        budget_aed: { type: "number", description: "Total budget in AED (500-500000). Default 1500." },
+        budget_tier: { type: "string", enum: ["lean", "standard", "aggressive"], description: "Default lean." },
+        countries: { type: "array", items: { type: "string" }, description: "ISO codes. Default [\"AE\"]." },
+        primary_dish_id: { type: "string", description: "Menu item to feature, if any." },
+        moment_id: { type: "string", description: "Calendar moment to tie the campaign to." },
+      },
+      required: ["name", "campaign_brief"],
     },
   },
   {
@@ -903,6 +923,8 @@ export async function executeTool(
         return await execUpdatePromotion(restaurantId, clerkId, input);
       case "send_whatsapp_campaign":
         return await execSendWhatsappCampaign(restaurantId, clerkId, input);
+      case "create_ad_campaign":
+        return await execCreateAdCampaign(restaurantId, clerkId, entitlements, input);
       case "toggle_availability":
         return await execToggleAvailability(restaurantId, clerkId, input);
       case "create_menu_item":
@@ -2834,6 +2856,125 @@ async function execSendWhatsappCampaign(
       capped: audience.capped,
       mode: audience.mode,
       message: `Drafted a broadcast to ${recipientLabel} eligible customers (${segmentLabel}). Approving it in the Inbox ${audience.mode === "meta_cloud_api" ? "SENDS it after a 5-minute undo window" : "stages tap-to-send links in CRM"} — make sure the owner knows.`,
+    }),
+    draftId: draft.id,
+  };
+}
+
+async function execCreateAdCampaign(
+  restaurantId: string,
+  clerkId: string,
+  entitlements: PlanEntitlements,
+  input: Input
+): Promise<ToolResult> {
+  if (!entitlements.adStudioEnabled) {
+    return { content: JSON.stringify({ error: "not_eligible", hint: "Ad Studio requires the Pro plan." }) };
+  }
+  if (entitlements.adProjectMonthlyLimit !== null) {
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const created = await prisma.adProject.count({
+      where: { restaurantId, createdAt: { gte: monthStart } },
+    });
+    if (created >= entitlements.adProjectMonthlyLimit) {
+      return {
+        content: JSON.stringify({
+          error: "quota_exhausted",
+          used: created,
+          limit: entitlements.adProjectMonthlyLimit,
+          hint: "Monthly ad project limit reached; resets next month.",
+        }),
+      };
+    }
+  }
+
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { cuisineType: true },
+  });
+  if (!restaurant) {
+    return { content: JSON.stringify({ error: "restaurant_not_found" }) };
+  }
+
+  if (input.primary_dish_id) {
+    const dish = await prisma.menuItem.findFirst({
+      where: { id: String(input.primary_dish_id), restaurantId },
+      select: { id: true },
+    });
+    if (!dish) {
+      return await buildItemNotFoundResult(restaurantId, [String(input.primary_dish_id)], []);
+    }
+  }
+
+  let sourceMoment: { id: string; year: number; startsOn: string; name: string } | null = null;
+  if (input.moment_id) {
+    const occurrence = resolveUpcomingMomentOccurrence(String(input.moment_id), new Date().toISOString());
+    if (!occurrence) {
+      return {
+        content: JSON.stringify({
+          error: `Unknown calendar moment "${String(input.moment_id)}". Call list_calendar_moments to see valid IDs.`,
+        }),
+      };
+    }
+    sourceMoment = { id: occurrence.moment.id, year: occurrence.year, startsOn: occurrence.from, name: occurrence.moment.name };
+  }
+
+  const budgetAed = input.budget_aed != null ? Number(input.budget_aed) : 1500;
+  if (!Number.isFinite(budgetAed) || budgetAed < 500 || budgetAed > 500000) {
+    return { content: JSON.stringify({ error: "budget_aed must be between 500 and 500000." }) };
+  }
+
+  const brief = {
+    restaurantId,
+    name: String(input.name),
+    campaignType: "freeform",
+    campaignBrief: String(input.campaign_brief),
+    goal: (input.goal as string) ?? "bofu",
+    countries: Array.isArray(input.countries) && input.countries.length > 0 ? (input.countries as string[]) : ["AE"],
+    cuisines: [restaurant.cuisineType ?? "international"],
+    targetPlatforms: ["Meta"],
+    budgetTier: (input.budget_tier as string) ?? "lean",
+    budgetAed: Math.round(budgetAed),
+    primaryDishId: input.primary_dish_id ? String(input.primary_dish_id) : undefined,
+  };
+
+  // Validate NOW so the model gets immediate structured feedback instead of a
+  // ship-time failure (e.g. an invalid country code).
+  const parsedCheck = briefInputSchema.safeParse(brief);
+  if (!parsedCheck.success) {
+    return {
+      content: JSON.stringify({
+        error: "invalid_brief",
+        issues: parsedCheck.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+      }),
+    };
+  }
+
+  const draft = await createDraft(restaurantId, clerkId, {
+    actionType: "ad_campaign_create_and_generate",
+    source: DraftActionSource.chat,
+    title: `Create "${brief.name}" ad campaign`,
+    subtitle: `${brief.goal} · AED ${brief.budgetAed} · generates ad variants on approval`,
+    iconKey: "ad",
+    affectedSurface: "/dashboard/ad-studio",
+    payload: { brief, sourceMomentId: sourceMoment?.id ?? null, sourceMomentYear: sourceMoment?.year ?? null, sourceMomentStartsOn: sourceMoment?.startsOn ?? null },
+    preview: {
+      name: brief.name,
+      brief: brief.campaignBrief,
+      goal: brief.goal,
+      budgetAed: brief.budgetAed,
+      budgetTier: brief.budgetTier,
+      countries: brief.countries,
+      moment: sourceMoment ? { id: sourceMoment.id, name: sourceMoment.name, year: sourceMoment.year } : null,
+    },
+  });
+
+  return {
+    content: JSON.stringify({
+      success: true,
+      draft_id: draft.id,
+      message: `Drafted ad campaign "${brief.name}" (AED ${brief.budgetAed}, ${brief.goal}). On approval the project is created and ad variants start generating in Ad Studio.`,
     }),
     draftId: draft.id,
   };
