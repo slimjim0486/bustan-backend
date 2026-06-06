@@ -18,6 +18,7 @@ export const WRITE_TOOL_NAMES = new Set([
   "send_whatsapp_campaign",
   "create_ad_campaign",
   "generate_dish_images",
+  "delete_menu_items",
   "toggle_availability",
   "create_menu_item",
   "create_menu_section",

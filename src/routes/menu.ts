@@ -400,7 +400,7 @@ function normalizeOptionalDateTime(value: string | null | undefined) {
   return parsed;
 }
 
-async function deleteEmptyPromotions(
+export async function deleteEmptyPromotions(
   tx: Pick<typeof prisma, "promotion">,
   restaurantId: string
 ) {

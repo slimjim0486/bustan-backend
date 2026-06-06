@@ -11,6 +11,7 @@ import { DraftActionKind, DraftActionStatus, DraftActionSource, Prisma } from "@
 import { ApiError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { executeCampaignSend } from "@/services/campaign-send";
+import { deleteEmptyPromotions } from "@/routes/menu";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { briefInputSchema } from "@/services/ad-studio-ai";
 import {
@@ -653,6 +654,8 @@ async function dispatchShip(draft: DraftAction): Promise<ShipResult> {
       return shipMenuItemsBulkUpdate(draft);
     case "menu_descriptions_bulk":
       return shipMenuDescriptionsBulk(draft);
+    case "menu_items_delete":
+      return shipMenuItemsDelete(draft);
     case "dietary_tags_apply":
       return shipDietaryTagsApply(draft);
     case "review_reply":
@@ -1134,6 +1137,47 @@ async function shipMenuDescriptionsBulk(draft: DraftAction): Promise<ShipResult>
     ok: true,
     message: `Updated ${updated} description${updated === 1 ? "" : "s"}`,
     data: { count: updated },
+  };
+}
+
+interface MenuItemsDeletePayload {
+  menuItemIds: string[];
+  sectionIds: string[];
+}
+
+async function shipMenuItemsDelete(draft: DraftAction): Promise<ShipResult> {
+  const payload = draft.payload as unknown as MenuItemsDeletePayload;
+  const itemIds = payload?.menuItemIds ?? [];
+  const sectionIds = payload?.sectionIds ?? [];
+  if (itemIds.length === 0 && sectionIds.length === 0) {
+    throw new Error("menu_items_delete payload empty");
+  }
+
+  let deletedItems = 0;
+  let cascadeItems = 0;
+  let deletedSections = 0;
+  await prisma.$transaction(async (tx) => {
+    if (itemIds.length) {
+      const res = await tx.menuItem.deleteMany({ where: { id: { in: itemIds }, restaurantId: draft.restaurantId } });
+      deletedItems = res.count;
+    }
+    if (sectionIds.length) {
+      // Count items that will cascade-delete with their sections BEFORE the
+      // section deleteMany (which reports only section rows, not cascaded items).
+      cascadeItems = await tx.menuItem.count({
+        where: { sectionId: { in: sectionIds }, restaurantId: draft.restaurantId },
+      });
+      const res = await tx.menuSection.deleteMany({ where: { id: { in: sectionIds }, restaurantId: draft.restaurantId } });
+      deletedSections = res.count; // MenuItem FK cascades
+    }
+    await deleteEmptyPromotions(tx, draft.restaurantId);
+  });
+
+  const totalItems = deletedItems + cascadeItems;
+  return {
+    ok: true,
+    message: `Deleted ${totalItems} item${totalItems === 1 ? "" : "s"}${deletedSections ? ` and ${deletedSections} section${deletedSections === 1 ? "" : "s"}` : ""}. Emptied promotions were removed.`,
+    data: { deletedItems: totalItems, deletedSections },
   };
 }
 

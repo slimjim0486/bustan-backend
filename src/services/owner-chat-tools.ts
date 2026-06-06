@@ -448,6 +448,19 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "delete_menu_items",
+    description:
+      "PERMANENTLY delete menu items and/or whole sections. Destructive and final after the approval grace window — always restate what will be deleted (including items inside sections and any promotions affected) before the owner approves. For temporarily unavailable dishes use toggle_availability instead.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        menu_item_ids: { type: "array", items: { type: "string" } },
+        section_ids: { type: "array", items: { type: "string" } },
+      },
+      required: [],
+    },
+  },
+  {
     name: "toggle_availability",
     description:
       "Mark menu items as sold out or available.",
@@ -942,6 +955,8 @@ export async function executeTool(
         return await execCreateAdCampaign(restaurantId, clerkId, entitlements, input);
       case "generate_dish_images":
         return await execGenerateDishImages(restaurantId, clerkId, entitlements, input);
+      case "delete_menu_items":
+        return await execDeleteMenuItems(restaurantId, clerkId, input);
       case "toggle_availability":
         return await execToggleAvailability(restaurantId, clerkId, input);
       case "create_menu_item":
@@ -3072,6 +3087,82 @@ async function execGenerateDishImages(
       draft_id: draft.id,
       count: items.length,
       message: `Drafted photo generation for ${items.length} item(s) — generation starts after Inbox approval.`,
+    }),
+    draftId: draft.id,
+  };
+}
+
+async function execDeleteMenuItems(
+  restaurantId: string,
+  clerkId: string,
+  input: Input
+): Promise<ToolResult> {
+  const itemIds = Array.isArray(input.menu_item_ids) ? (input.menu_item_ids as string[]).map(String) : [];
+  const sectionIds = Array.isArray(input.section_ids) ? (input.section_ids as string[]).map(String) : [];
+  if (itemIds.length === 0 && sectionIds.length === 0) {
+    return { content: JSON.stringify({ error: "Pass menu_item_ids and/or section_ids." }) };
+  }
+
+  const directItems = itemIds.length
+    ? await prisma.menuItem.findMany({ where: { id: { in: itemIds }, restaurantId }, select: { id: true, name: true } })
+    : [];
+  if (directItems.length < itemIds.length) {
+    return await buildItemNotFoundResult(restaurantId, itemIds, directItems);
+  }
+
+  const sections = sectionIds.length
+    ? await prisma.menuSection.findMany({
+        where: { id: { in: sectionIds }, restaurantId },
+        select: { id: true, name: true, items: { select: { id: true, name: true } } },
+      })
+    : [];
+  if (sections.length < sectionIds.length) {
+    const missing = sectionIds.filter((id) => !sections.some((s) => s.id === id));
+    return { content: JSON.stringify({ error: "section_not_found", missing_section_ids: missing }) };
+  }
+
+  const cascadeItems = sections.flatMap((s) => s.items);
+  const allItemIds = [...new Set([...directItems.map((i) => i.id), ...cascadeItems.map((i) => i.id)])];
+
+  // Promotions that would lose items (and which would empty out entirely).
+  const affectedPromos = allItemIds.length
+    ? await prisma.promotion.findMany({
+        where: { restaurantId, isActive: true, items: { some: { menuItemId: { in: allItemIds } } } },
+        select: { id: true, title: true, items: { select: { menuItemId: true } } },
+      })
+    : [];
+  const promoWarnings = affectedPromos.map((p) => {
+    const losing = p.items.filter((pi) => allItemIds.includes(pi.menuItemId)).length;
+    const emptiesOut = losing === p.items.length;
+    return { title: p.title, losingItems: losing, totalItems: p.items.length, willBeRemoved: emptiesOut };
+  });
+
+  const totalCount = allItemIds.length;
+  const draft = await createDraft(restaurantId, clerkId, {
+    kind: DraftActionKind.bulk,
+    actionType: "menu_items_delete",
+    source: DraftActionSource.chat,
+    title: `Delete ${totalCount} item${totalCount === 1 ? "" : "s"}${sections.length ? ` (${sections.length} section${sections.length === 1 ? "" : "s"})` : ""}`,
+    subtitle: [...sections.map((s) => `§${s.name}`), ...directItems.map((i) => i.name)].slice(0, 3).join(", ") + (totalCount > 3 ? ", …" : ""),
+    iconKey: "menu",
+    affectedSurface: "/dashboard/menu",
+    childCount: totalCount,
+    payload: { menuItemIds: directItems.map((i) => i.id), sectionIds: sections.map((s) => s.id) },
+    preview: {
+      items: directItems.map((i) => i.name),
+      sections: sections.map((s) => ({ name: s.name, cascadeCount: s.items.length, itemNames: s.items.map((i) => i.name) })),
+      promotionWarnings: promoWarnings,
+      permanent: true,
+    },
+  });
+
+  return {
+    content: JSON.stringify({
+      success: true,
+      draft_id: draft.id,
+      total_items_deleted: totalCount,
+      promotion_warnings: promoWarnings,
+      message: `Drafted PERMANENT deletion of ${totalCount} item(s)${promoWarnings.length ? ` — warning: affects ${promoWarnings.length} active promotion(s)` : ""}. Spell out the blast radius to the owner before they approve.`,
     }),
     draftId: draft.id,
   };
