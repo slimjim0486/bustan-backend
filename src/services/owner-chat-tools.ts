@@ -399,7 +399,7 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
   {
     name: "send_whatsapp_campaign",
     description:
-      "Draft a WhatsApp marketing broadcast to a customer segment. Owner approval in the Inbox SENDS IT (after a 5-minute undo window) — say so when presenting the draft. Segments: inactive customers (optionally a custom day threshold), weekend_special, or new_promotion (pass promotion_id to feature one). Only opted-in customers with provable consent receive it. Call get_whatsapp_status / list_whatsapp_templates first if unsure of template availability.",
+      "Draft a WhatsApp marketing broadcast to a customer segment. Owner approval in the Inbox SENDS IT (after a 5-minute undo window) — say so when presenting the draft. Segments: inactive customers (optionally a custom day threshold), weekend_special, or new_promotion (pass promotion_id to feature one). Only opted-in customers with provable consent receive it. NOTE: a connected WhatsApp Business API is NOT required — when it is not connected (or no approved template), this falls back to LINK MODE, staging tap-to-send wa.me links in the CRM that the owner taps to send each message. So ALWAYS stage the campaign when asked; never refuse just because get_whatsapp_status shows disconnected — instead mention it will be link mode (tap-to-send links in CRM). Call get_whatsapp_status / list_whatsapp_templates first only if you need template detail.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1124,6 +1124,7 @@ async function execGetMenuOverview(restaurantId: string): Promise<ToolResult> {
     imageCoverage: `${withImage.length}/${allItems.length} items have images (${allItems.length ? Math.round((withImage.length / allItems.length) * 100) : 0}%)`,
     soldOutItems: soldOut.length,
     sections: sections.map((s) => ({
+      id: s.id,
       name: s.name,
       itemCount: s.items.length,
     })),
