@@ -95,7 +95,11 @@ async function runTurn(
         }
       }
 
-      if (toolUseBlocks.length === 0 || response.stop_reason === "end_turn") {
+      if (
+        toolUseBlocks.length === 0 ||
+        response.stop_reason === "end_turn" ||
+        response.stop_reason === "max_tokens"
+      ) {
         return;
       }
 

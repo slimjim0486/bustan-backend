@@ -146,6 +146,7 @@ const INJECTION_PATTERNS = [
   /system\s*:\s*/i,
   /\[INST\]/i,
   /<<\s*SYS\s*>>/i,
+  /<\s*\/?\s*(system_note|owner_message)\b/i,
   /output\s+(everything|all|the\s+text)\s+(above|before)/i,
   /repeat\s+(your|the)\s+(system\s+)?(prompt|instructions)/i,
   /what\s+(are|were)\s+your\s+(instructions|rules|system\s+prompt)/i,
@@ -747,8 +748,20 @@ export const ownerChatRoute = new Hono<{
           }
 
           try {
-            const escalationEnabled =
-              routingEnabled && !(await isEscalationBudgetExhausted(restaurantId));
+            // Routing is an enhancement: if the budget check itself fails,
+            // degrade to the default tier rather than failing the turn.
+            let escalationEnabled = routingEnabled;
+            if (escalationEnabled) {
+              try {
+                escalationEnabled = !(await isEscalationBudgetExhausted(restaurantId));
+              } catch (budgetError) {
+                console.error("[owner-chat] escalation budget check failed; using default tier", {
+                  restaurantId,
+                  message: budgetError instanceof Error ? budgetError.message : String(budgetError),
+                });
+                escalationEnabled = false;
+              }
+            }
 
             const lastAssistant = escalationEnabled
               ? await prisma.ownerChatMessage.findFirst({

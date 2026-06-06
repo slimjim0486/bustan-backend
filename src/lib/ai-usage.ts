@@ -22,8 +22,8 @@ export type AiFeature =
 
 const TOKEN_PRICING_USD = {
   haiku: {
-    input: 0.0000008,
-    output: 0.000004,
+    input: 0.000001,
+    output: 0.000005,
   },
   sonnet: {
     input: 0.000003,
