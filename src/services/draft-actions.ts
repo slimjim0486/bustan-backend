@@ -583,6 +583,8 @@ async function dispatchShip(draft: DraftAction): Promise<ShipResult> {
       return shipMenuItemUpdate(draft);
     case "promotion_create":
       return shipPromotionCreate(draft);
+    case "promotion_update":
+      return shipPromotionUpdate(draft);
     case "menu_item_create":
       return shipMenuItemCreate(draft);
     case "menu_section_create":
@@ -760,6 +762,76 @@ async function shipPromotionCreate(draft: DraftAction): Promise<ShipResult> {
     ok: true,
     message: `Created promotion "${created.title}"`,
     data: { promotionId: created.id, itemCount: ownedItems.length },
+  };
+}
+
+interface PromotionUpdatePayload {
+  promotionId: string;
+  title?: string;
+  subtitle?: string;
+  description?: string;
+  badgeLabel?: string;
+  terms?: string;
+  promoPrice?: number | null;
+  startsAt?: string;
+  endsAt?: string;
+  isActive?: boolean;
+  replaceItemIds?: string[];
+}
+
+async function shipPromotionUpdate(draft: DraftAction): Promise<ShipResult> {
+  const payload = draft.payload as unknown as PromotionUpdatePayload;
+  if (!payload?.promotionId) {
+    throw new Error("promotion_update payload missing promotionId");
+  }
+
+  const promo = await prisma.promotion.findFirst({
+    where: { id: payload.promotionId, restaurantId: draft.restaurantId },
+    select: { id: true, title: true },
+  });
+  if (!promo) {
+    return { ok: false, message: "Promotion no longer exists — it may have been deleted since this draft was created." };
+  }
+
+  const data: Prisma.PromotionUpdateInput = {};
+  if (payload.title !== undefined) data.title = payload.title.trim();
+  if (payload.subtitle !== undefined) data.subtitle = payload.subtitle;
+  if (payload.description !== undefined) data.description = payload.description;
+  if (payload.badgeLabel !== undefined) data.badgeLabel = payload.badgeLabel;
+  if (payload.terms !== undefined) data.terms = payload.terms;
+  if (payload.promoPrice !== undefined) {
+    data.promoPrice = payload.promoPrice != null ? new Prisma.Decimal(payload.promoPrice) : null;
+  }
+  if (payload.startsAt !== undefined) data.startsAt = payload.startsAt ? new Date(payload.startsAt) : null;
+  if (payload.endsAt !== undefined) data.endsAt = payload.endsAt ? new Date(payload.endsAt) : null;
+  if (payload.isActive !== undefined) data.isActive = payload.isActive;
+
+  await prisma.$transaction(async (tx) => {
+    if (payload.replaceItemIds && payload.replaceItemIds.length > 0) {
+      // Defense-in-depth: only re-attach items that belong to this restaurant,
+      // mirroring shipPromotionCreate's tampered-payload guard.
+      const owned = await tx.menuItem.findMany({
+        where: { id: { in: payload.replaceItemIds }, restaurantId: draft.restaurantId },
+        select: { id: true },
+      });
+      if (owned.length === 0) {
+        throw new Error("None of the requested menu items belong to this restaurant");
+      }
+      await tx.promotionItem.deleteMany({ where: { promotionId: promo.id } });
+      data.items = {
+        create: owned.map((m, index) => ({
+          menuItemId: m.id,
+          role: "included",
+          displayOrder: index,
+        })),
+      };
+    }
+    await tx.promotion.update({ where: { id: promo.id }, data });
+  });
+
+  return {
+    ok: true,
+    message: payload.isActive === false ? `Promotion "${promo.title}" ended.` : `Promotion "${promo.title}" updated.`,
   };
 }
 

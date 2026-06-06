@@ -372,6 +372,29 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "update_promotion",
+    description:
+      "Edit or end an existing promotion. Call when the owner wants to change a promotion's price/discount, dates, title/copy, items, or to end/deactivate it (\"end the Eid offer\", \"extend it through Sunday\", \"make it 15% instead\"). To END a promotion pass is_active=false (or an ends_at in the past). Use get_promotion_list first to find the promotion_id. Only pass the fields being changed.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        promotion_id: { type: "string" },
+        title: { type: "string" },
+        subtitle: { type: "string" },
+        description: { type: "string" },
+        badge_label: { type: "string" },
+        terms: { type: "string" },
+        promo_price: { type: "number", description: "New absolute promo price in AED. Use this OR discount_percent." },
+        discount_percent: { type: "number", description: "New percentage off; server recomputes promo price from the CURRENT linked items' summed price." },
+        starts_at: { type: "string", description: "ISO date string." },
+        ends_at: { type: "string", description: "ISO date string. \"End it tonight\" = today 23:59 local (UTC+4)." },
+        is_active: { type: "boolean", description: "false = end/deactivate the promotion immediately." },
+        item_ids: { type: "array", items: { type: "string" }, description: "ONLY when changing which items are included; replaces the full item list." },
+      },
+      required: ["promotion_id"],
+    },
+  },
+  {
     name: "toggle_availability",
     description:
       "Mark menu items as sold out or available.",
@@ -858,6 +881,8 @@ export async function executeTool(
         return await execUpdateMenuItemsBulk(restaurantId, clerkId, input);
       case "create_promotion":
         return await execCreatePromotion(restaurantId, clerkId, entitlements, input);
+      case "update_promotion":
+        return await execUpdatePromotion(restaurantId, clerkId, input);
       case "toggle_availability":
         return await execToggleAvailability(restaurantId, clerkId, input);
       case "create_menu_item":
@@ -2569,6 +2594,115 @@ async function execCreatePromotion(
           : []),
       ],
     },
+    draftId: draft.id,
+  };
+}
+
+async function execUpdatePromotion(
+  restaurantId: string,
+  clerkId: string,
+  input: Input
+): Promise<ToolResult> {
+  const promotionId = String(input.promotion_id ?? "");
+  const promo = await prisma.promotion.findFirst({
+    where: { id: promotionId, restaurantId },
+    include: { items: { include: { menuItem: { select: { id: true, name: true, price: true } } } } },
+  });
+
+  if (!promo) {
+    const recent = await prisma.promotion.findMany({
+      where: { restaurantId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, title: true, isActive: true },
+      take: 10,
+    });
+    return {
+      content: JSON.stringify({
+        error: "promotion_not_found",
+        did_you_mean: recent,
+        hint: "Pick the intended promotion from did_you_mean or call get_promotion_list.",
+      }),
+    };
+  }
+
+  // Resolve target items: replacement list if given, else current items.
+  let items = promo.items.map((pi) => pi.menuItem);
+  let replaceItemIds: string[] | null = null;
+  if (Array.isArray(input.item_ids) && input.item_ids.length > 0) {
+    const requested = (input.item_ids as string[]).map(String);
+    const found = await prisma.menuItem.findMany({
+      where: { id: { in: requested }, restaurantId },
+      select: { id: true, name: true, price: true },
+    });
+    if (found.length < requested.length) {
+      return await buildItemNotFoundResult(restaurantId, requested, found);
+    }
+    items = found;
+    replaceItemIds = requested;
+  }
+
+  // Percent shorthand recomputes off the (possibly replaced) item set.
+  let promoPrice: number | null | undefined =
+    input.promo_price != null ? Number(input.promo_price) : undefined;
+  if (input.discount_percent != null) {
+    const pct = Number(input.discount_percent);
+    if (!Number.isFinite(pct) || pct <= 0 || pct >= 100) {
+      return { content: JSON.stringify({ error: "discount_percent must be between 0 and 100 (exclusive)." }) };
+    }
+    const baseTotal = items.reduce((sum, item) => sum + Number(item.price), 0);
+    promoPrice = Math.round(baseTotal * (1 - pct / 100) * 100) / 100;
+  }
+
+  const changes: Array<{ label: string; before: string | null; after: string }> = [];
+  const set = (label: string, before: unknown, after: unknown) =>
+    changes.push({ label, before: before == null ? null : String(before), after: String(after) });
+
+  if (input.title !== undefined) set("Title", promo.title, input.title);
+  if (input.subtitle !== undefined) set("Subtitle", promo.subtitle, input.subtitle);
+  if (input.description !== undefined) set("Description", promo.description, input.description);
+  if (input.badge_label !== undefined) set("Badge", promo.badgeLabel, input.badge_label);
+  if (input.terms !== undefined) set("Terms", promo.terms, input.terms);
+  if (promoPrice !== undefined) set("Price", promo.promoPrice ? formatPrice(promo.promoPrice) : null, formatPrice(promoPrice ?? 0));
+  if (input.starts_at !== undefined) set("Starts", promo.startsAt?.toISOString() ?? null, String(input.starts_at));
+  if (input.ends_at !== undefined) set("Ends", promo.endsAt?.toISOString() ?? null, String(input.ends_at));
+  if (input.is_active !== undefined) set("Status", promo.isActive ? "Active" : "Inactive", input.is_active ? "Active" : "Ended");
+  if (replaceItemIds) set("Items", promo.items.map((pi) => pi.menuItem.name).join(", "), items.map((i) => i.name).join(", "));
+
+  if (changes.length === 0) {
+    return { content: JSON.stringify({ error: "No changes supplied. Pass at least one field to update." }) };
+  }
+
+  const ending = input.is_active === false;
+  const draft = await createDraft(restaurantId, clerkId, {
+    actionType: "promotion_update",
+    source: DraftActionSource.chat,
+    title: ending ? `End "${promo.title}"` : `Update "${promo.title}"`,
+    subtitle: changes.map((chg) => chg.label).join(" · "),
+    iconKey: "promotion",
+    affectedSurface: "/dashboard/menu",
+    payload: {
+      promotionId: promo.id,
+      title: input.title !== undefined ? String(input.title) : undefined,
+      subtitle: input.subtitle !== undefined ? String(input.subtitle) : undefined,
+      description: input.description !== undefined ? String(input.description) : undefined,
+      badgeLabel: input.badge_label !== undefined ? String(input.badge_label) : undefined,
+      terms: input.terms !== undefined ? String(input.terms) : undefined,
+      promoPrice: promoPrice !== undefined ? promoPrice : undefined,
+      startsAt: input.starts_at !== undefined ? String(input.starts_at) : undefined,
+      endsAt: input.ends_at !== undefined ? String(input.ends_at) : undefined,
+      isActive: input.is_active !== undefined ? Boolean(input.is_active) : undefined,
+      replaceItemIds: replaceItemIds ?? undefined,
+    },
+    preview: { promotion: promo.title, changes },
+  });
+
+  return {
+    content: JSON.stringify({
+      success: true,
+      draft_id: draft.id,
+      message: `Drafted ${ending ? "ending" : "update of"} "${promo.title}" — awaiting owner approval in the Inbox.`,
+      changes,
+    }),
     draftId: draft.id,
   };
 }
