@@ -30,6 +30,8 @@ export interface CampaignSendOptions {
   body?: string;
   name?: string;
   promotionId?: string | null;
+  /** DraftAction id when invoked from a Sous Chef ship handler; written onto the Campaign for audit. */
+  sourceDraftId?: string;
 }
 
 export interface CampaignSendResult {
@@ -506,6 +508,8 @@ export async function executeCampaignSend(
       status: campaignStatus,
       loggedCount,
       loggedAt: new Date(),
+      // audit linkage for Sous Chef drafts (atomic with the final status write)
+      sourceDraftId: options.sourceDraftId ?? null,
     },
   });
 

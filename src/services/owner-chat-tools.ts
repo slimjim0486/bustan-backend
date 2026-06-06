@@ -2768,6 +2768,9 @@ async function execSendWhatsappCampaign(
     where: { id: restaurantId },
     select: { name: true },
   });
+  if (!restaurant) {
+    return { content: JSON.stringify({ error: "restaurant_not_found" }) };
+  }
   const templateName = input.template_name ? String(input.template_name) : type;
 
   const audience = await resolveCampaignAudience({ restaurantId, type, inactiveDays, templateName });
@@ -2799,7 +2802,7 @@ async function execSendWhatsappCampaign(
     actionType: "whatsapp_campaign_send",
     source: DraftActionSource.chat,
     title: `WhatsApp blast · ${recipientLabel} customer${audience.eligibleCount === 1 ? "" : "s"}`,
-    subtitle: `${segmentLabel} · ${modeNote} · 5-min undo after approval`,
+    subtitle: `${segmentLabel} · ${modeNote} · 5-min undo after approval · counts re-checked at send`,
     iconKey: "whatsapp",
     affectedSurface: "/dashboard/crm",
     payload: {
@@ -2809,7 +2812,7 @@ async function execSendWhatsappCampaign(
       body: input.body ? String(input.body) : undefined,
       name: input.name ? String(input.name) : undefined,
       promotionId: promotion?.id ?? null,
-      restaurantName: restaurant?.name ?? "",
+      restaurantName: restaurant.name,
     },
     preview: {
       recipients: audience.eligibleCount,

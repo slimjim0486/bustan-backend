@@ -1371,11 +1371,7 @@ async function shipWhatsappCampaignSend(draft: DraftAction): Promise<ShipResult>
     body: payload.body,
     name: payload.name,
     promotionId: payload.promotionId ?? null,
-  });
-
-  await prisma.campaign.update({
-    where: { id: result.campaign.id },
-    data: { sourceDraftId: draft.id },
+    sourceDraftId: draft.id,
   });
 
   const skipped = result.skippedFrequency + result.skippedTier;
