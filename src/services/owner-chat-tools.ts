@@ -376,7 +376,7 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
   {
     name: "update_promotion",
     description:
-      "Edit or end an existing promotion. Call when the owner wants to change a promotion's price/discount, dates, title/copy, items, or to end/deactivate it (\"end the Eid offer\", \"extend it through Sunday\", \"make it 15% instead\"). To END a promotion pass is_active=false (or an ends_at in the past). Use get_promotion_list first to find the promotion_id. Only pass the fields being changed.",
+      "Edit or end an existing promotion. Call when the owner wants to change a promotion's price/discount, dates, title/copy, items, or to end/deactivate it (\"end the Eid offer\", \"extend it through Sunday\", \"make it 15% instead\"). To END a promotion pass is_active=false (or an ends_at in the past). Use get_promotion_list first to find the promotion_id. Only pass the fields being changed. In Arabic, \"عرض\" (offer/promotion) paired with a dish or promo name means the PROMOTION — \"أوقف عرض X\" = end promotion X via this tool, NOT toggle_availability.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -463,7 +463,7 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
   {
     name: "toggle_availability",
     description:
-      "Mark menu items as sold out or available.",
+      "Mark menu items as sold out or available. Do NOT use this to end a promotion/offer (\"عرض\") — use update_promotion with is_active=false for that.",
     input_schema: {
       type: "object" as const,
       properties: {

@@ -185,10 +185,16 @@ async function main() {
   const prompts = JSON.parse(
     readFileSync(join(__dirname, "golden-prompts.json"), "utf8")
   ) as GoldenPrompt[];
+
+  // Targeted runs: EVAL_ONLY=id1,id2 runs only matching prompt ids (cheap spot-checks).
+  const only = process.env.EVAL_ONLY?.split(",").map((s) => s.trim()).filter(Boolean);
+  const selected = only?.length ? prompts.filter((p) => only.includes(p.id)) : prompts;
+  if (only?.length) console.log(`EVAL_ONLY: running ${selected.length}/${prompts.length} prompts`);
+
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
   let failures = 0;
-  for (const golden of prompts) {
+  for (const golden of selected) {
     const errors: string[] = [];
     let turnDebug: TurnResult | undefined;
     try {
@@ -243,7 +249,7 @@ async function main() {
     }
   }
 
-  console.log(`\n${prompts.length - failures}/${prompts.length} passed`);
+  console.log(`\n${selected.length - failures}/${selected.length} passed`);
   process.exitCode = failures > 0 ? 1 : 0;
 }
 
