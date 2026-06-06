@@ -23,5 +23,20 @@
   { "id": "typo-item-name", "prompt": "Put Chicken Machbus and Lamb Mandy on a 10% offer", "expect": { "escalation": true } },
   { "id": "ar-read-menu-size", "prompt": "كم عدد الأصناف في قائمتي؟", "expect": { "escalation": false, "read_tools_any": ["get_menu_overview"] } },
   { "id": "ar-two-item-10pct", "prompt": "اعمل عرض خصم ١٠٪ على الحمص والمتبل", "expect": { "escalation": true } },
-  { "id": "ar-soldout", "prompt": "خلّص الكنافة، علّمها غير متوفرة", "expect": { "read_tools_any": ["search_menu_items", "get_menu_overview"] } }
+  { "id": "ar-soldout", "prompt": "خلّص الكنافة، علّمها غير متوفرة", "expect": { "read_tools_any": ["search_menu_items", "get_menu_overview"] } },
+  { "id": "p2-end-promo", "prompt": "End the Machboos Monday promotion", "expect": { "escalation": true, "read_tools_any": ["get_promotion_list"] } },
+  { "id": "p2-extend-promo", "prompt": "Extend Machboos Monday until next Sunday", "expect": { "read_tools_any": ["get_promotion_list"] } },
+  { "id": "p2-promo-discount-change", "prompt": "Change Machboos Monday to 20% off instead", "expect": { "read_tools_any": ["get_promotion_list"] } },
+  { "id": "p2-winback", "prompt": "Send customers who haven't ordered in 45 days a WhatsApp offer to come back", "expect": { "read_tools_any": ["get_inactive_customers"] } },
+  { "id": "p2-winback-default", "prompt": "Send a winback WhatsApp blast to inactive customers", "expect": { "read_tools_any": ["get_inactive_customers"] } },
+  { "id": "p2-ad-campaign", "prompt": "Set up an ad campaign for the Mixed Grill Platter with a 2000 dirham budget", "expect": { "escalation": true, "read_tools_any": ["search_menu_items", "get_menu_overview"] } },
+  { "id": "p2-images-missing", "prompt": "Generate photos for all my dishes that don't have images yet", "expect": { "escalation": true, "read_tools_any": ["get_image_status"] } },
+  { "id": "p2-images-named", "prompt": "Make an AI photo for the Kunafa", "expect": { "escalation": true, "read_tools_any": ["search_menu_items", "get_menu_overview"] } },
+  { "id": "p2-delete-item", "prompt": "Remove the Fattoush from my menu permanently", "expect": { "read_tools_any": ["search_menu_items", "get_menu_overview"] } },
+  { "id": "p2-delete-not-soldout", "prompt": "The Halloumi Skewers are out of stock today", "expect": { "read_tools_any": ["search_menu_items", "get_menu_overview"] } },
+  { "id": "p2-insight-to-action", "prompt": "Win back customers who haven't ordered in 2 months with a 15% offer and message them about it", "expect": { "escalation": true, "read_tools_any": ["get_inactive_customers", "get_menu_overview"] } },
+  { "id": "p2-read-still-cheap", "prompt": "How many customers are opted in to WhatsApp marketing?", "expect": { "escalation": false, "read_tools_any": ["get_crm_summary"] } },
+  { "id": "p2-ar-end-promo", "prompt": "أوقف عرض الماتشبوس", "expect": { "escalation": true, "read_tools_any": ["get_promotion_list"] } },
+  { "id": "p2-ar-winback", "prompt": "ارسل رسالة واتساب للعملاء اللي ما طلبوا من شهرين", "expect": { "read_tools_any": ["get_inactive_customers"] } },
+  { "id": "p2-ar-images", "prompt": "سوّي صور للأطباق اللي بدون صور", "expect": { "read_tools_any": ["get_image_status"] } }
 ]
