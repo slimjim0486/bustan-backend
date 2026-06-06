@@ -839,6 +839,24 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
+// Phase 2 write tools stay dark until the restaurant's routing flag is on —
+// otherwise they'd activate for every Pro customer at deploy, executed by the
+// un-escalated default tier. Two FROZEN arrays (not rebuilt per request) keep
+// the prompt-cache prefix byte-stable per variant.
+export const PHASE2_TOOL_NAMES = new Set([
+  "update_promotion",
+  "send_whatsapp_campaign",
+  "create_ad_campaign",
+  "generate_dish_images",
+  "delete_menu_items",
+]);
+
+const BASE_OWNER_TOOLS = OWNER_TOOLS.filter((tool) => !PHASE2_TOOL_NAMES.has(tool.name));
+
+export function getOwnerTools(phase2Enabled: boolean): Anthropic.Tool[] {
+  return phase2Enabled ? OWNER_TOOLS : BASE_OWNER_TOOLS;
+}
+
 // ── Execution ──────────────────────────────────────────────────
 
 type Input = Record<string, unknown>;

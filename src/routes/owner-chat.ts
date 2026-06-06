@@ -19,7 +19,7 @@ import {
   isEscalationBudgetExhausted,
   shouldStartOnPlanner,
 } from "@/services/owner-chat-routing";
-import { OWNER_TOOLS, executeTool } from "@/services/owner-chat-tools";
+import { getOwnerTools, executeTool } from "@/services/owner-chat-tools";
 import { enqueueExtractionForRestaurant } from "@/queue/owner-chat-memory";
 import { enqueueWhisperForRestaurant } from "@/queue/owner-whisper";
 
@@ -233,6 +233,7 @@ export const ownerChatRoute = new Hono<{
           content: true,
           source: true,
           whisperId: true,
+          model: true,
           createdAt: true,
         },
       });
@@ -244,6 +245,7 @@ export const ownerChatRoute = new Hono<{
           content: m.content,
           source: m.source,
           whisperId: m.whisperId,
+          model: m.model,
           createdAt: m.createdAt.toISOString(),
         })),
       });
@@ -555,6 +557,7 @@ export const ownerChatRoute = new Hono<{
 
       const client = getClient();
       const routingEnabled = restaurant.sousChefRoutingEnabled;
+      const ownerTools = getOwnerTools(routingEnabled);
 
       // Token accounting per tier: exactly one "owner_chat" row per turn keeps
       // the monthly turn counter (which counts rows) intact; planner tokens get
@@ -606,7 +609,7 @@ export const ownerChatRoute = new Hono<{
                 {
                   max_tokens: opts.caps.maxTokens,
                   system: systemPrompt,
-                  tools: OWNER_TOOLS,
+                  tools: ownerTools,
                   messages: opts.loopMessages,
                 },
                 {
@@ -714,7 +717,7 @@ export const ownerChatRoute = new Hono<{
                 {
                   max_tokens: 1024,
                   system: systemPrompt,
-                  tools: OWNER_TOOLS,
+                  tools: ownerTools,
                   tool_choice: { type: "none" },
                   messages: opts.loopMessages,
                 },

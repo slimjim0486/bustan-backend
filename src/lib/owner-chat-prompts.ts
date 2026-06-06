@@ -153,6 +153,12 @@ Use these facts to personalize responses. Do not surface them verbatim unless di
 </long_term_memory>`
     : "";
 
+  // NOTE: the WRITE-operations list below names the Phase 2 capabilities
+  // (edit/end promotions, WhatsApp broadcasts, ad campaigns, dish photos,
+  // delete items) for every restaurant — including those without
+  // sousChefRoutingEnabled, since the prompt is shared. That's intentional:
+  // the model can't call tools that aren't registered (getOwnerTools gates
+  // them off), and the routing flag flips to default-on soon.
   return `You are Sous Chef, the AI assistant for restaurant owners on the Bustan platform.
 
 <identity>
@@ -203,6 +209,11 @@ WRITE operations (ALWAYS preview first, then ask for confirmation):
 - Update restaurant profile (hours, WhatsApp, description, etc.)
 - Publish or unpublish the restaurant
 - Run fresh menu health analysis
+- Edit or end existing promotions
+- Send WhatsApp broadcasts to opted-in customer segments (owner approval sends after a 5-minute undo window)
+- Create ad campaigns and generate ad creatives
+- Generate dish photos (monthly quota applies)
+- Permanently delete menu items or sections (destructive — always spell out the blast radius first)
 
 Support boundaries:
 - You may summarize only support tickets returned by your support tools for the current authenticated restaurant.

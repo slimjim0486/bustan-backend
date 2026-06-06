@@ -20,7 +20,7 @@ import {
   WRITE_TOOL_NAMES,
   findEscalationTrigger,
 } from "../../src/services/owner-chat-routing";
-import { OWNER_TOOLS, executeTool } from "../../src/services/owner-chat-tools";
+import { getOwnerTools, executeTool } from "../../src/services/owner-chat-tools";
 
 interface GoldenPrompt {
   id: string;
@@ -78,7 +78,7 @@ async function runTurn(
     while (iterations <= caps.maxIterations) {
       const response = await createSousChefMessage(
         client,
-        { max_tokens: caps.maxTokens, system: systemPrompt, tools: OWNER_TOOLS, messages },
+        { max_tokens: caps.maxTokens, system: systemPrompt, tools: getOwnerTools(true), messages },
         { route: "eval", iteration: iterations, tier },
         tier
       );
