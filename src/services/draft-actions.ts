@@ -1332,6 +1332,7 @@ async function shipAdCampaignCreateAndGenerate(draft: DraftAction): Promise<Ship
   const ents = getRestaurantEntitlements(restaurant);
 
   // Re-check quota at ship time (may have been consumed during the grace window).
+  // NOTE: moment-collision reuse below consumes no quota; this check can in rare cases block a reuse-only approval — accepted.
   if (ents.adProjectMonthlyLimit !== null) {
     const monthStart = new Date();
     monthStart.setDate(1);
@@ -1361,25 +1362,45 @@ async function shipAdCampaignCreateAndGenerate(draft: DraftAction): Promise<Ship
       select: { id: true, name: true, status: true },
     });
     if (existing) {
-      await enforceGlobalBudget();
-      await enforceGenerateRateLimit(draft.restaurantId);
-      const flipped = await prisma.adProject.updateMany({
-        where: { id: existing.id, status: { not: "generating" } },
-        data: { status: "generating", lastError: null },
-      });
-      if (flipped.count === 0) {
+      // Only auto-flip + enqueue from a fresh state. A `ready`/`exported`
+      // project already has approved creatives that the generation worker
+      // upserts by variant, so regenerating here would silently overwrite
+      // them — we don't want to clobber finished work the owner didn't
+      // explicitly ask to regenerate.
+      if (existing.status === "draft" || existing.status === "failed") {
+        await enforceGlobalBudget();
+        await enforceGenerateRateLimit(draft.restaurantId);
+        const flipped = await prisma.adProject.updateMany({
+          where: { id: existing.id, status: { not: "generating" } },
+          data: { status: "generating", lastError: null },
+        });
+        if (flipped.count === 0) {
+          return {
+            ok: true,
+            message: `Ad campaign "${existing.name}" is already generating in Ad Studio.`,
+            data: { adProjectId: existing.id, reusedExisting: true },
+          };
+        }
+        const numberOfVariants = Math.min(Math.max(ents.adGenerationsPerProject, 1), 6);
+        await enqueueAdStudioGeneration({ projectId: existing.id, numberOfVariants });
         return {
           ok: true,
-          message: `Ad campaign "${existing.name}" is already generating in Ad Studio.`,
+          message: `Ad campaign "${existing.name}" — generating ${numberOfVariants} variants in Ad Studio.`,
           data: { adProjectId: existing.id, reusedExisting: true },
         };
       }
-      const numberOfVariants = Math.min(Math.max(ents.adGenerationsPerProject, 1), 6);
-      await enqueueAdStudioGeneration({ projectId: existing.id, numberOfVariants });
+      if (existing.status === "generating") {
+        return {
+          ok: true,
+          message: `Campaign "${existing.name}" for this event is already generating — check Ad Studio.`,
+        };
+      }
+      // `ready`, `exported`, `archived`, or anything else: leave the finished
+      // project untouched and point the owner at Ad Studio to review/regenerate.
       return {
         ok: true,
-        message: `Ad campaign "${existing.name}" — generating ${numberOfVariants} variants in Ad Studio.`,
-        data: { adProjectId: existing.id, reusedExisting: true },
+        message: `You already have a campaign "${existing.name}" for this event — open Ad Studio to review it or regenerate from there.`,
+        data: { adProjectId: existing.id },
       };
     }
   }
