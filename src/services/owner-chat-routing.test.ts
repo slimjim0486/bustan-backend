@@ -29,10 +29,11 @@ test("one or two read calls do not escalate", () => {
   assert.equal(findEscalationTrigger(["get_menu_overview"], 1), null);
 });
 
-test("all 14 write tools are registered", () => {
-  assert.equal(WRITE_TOOL_NAMES.size, 14);
+test("all 15 write tools are registered", () => {
+  assert.equal(WRITE_TOOL_NAMES.size, 15);
   assert.ok(WRITE_TOOL_NAMES.has("create_promotion"));
   assert.ok(WRITE_TOOL_NAMES.has("update_promotion"));
+  assert.ok(WRITE_TOOL_NAMES.has("send_whatsapp_campaign"));
   assert.ok(WRITE_TOOL_NAMES.has("plan_marketing_week"));
   assert.ok(!WRITE_TOOL_NAMES.has("get_analytics"));
 });

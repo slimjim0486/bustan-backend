@@ -10,11 +10,22 @@ import type { DraftAction, PromotionType } from "@prisma/client";
 import { DraftActionKind, DraftActionStatus, DraftActionSource, Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { executeCampaignSend } from "@/services/campaign-send";
 
 // 14-day TTL for drafts that sit in pending without a decision.
 const DEFAULT_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000;
 // 60s grace window between approve and ship so the owner can undo.
 export const APPROVE_TO_SHIP_GRACE_MS = 60 * 1000;
+
+// Sending WhatsApp messages to customers is irreversible — give the owner a
+// longer rope on those. Everything else keeps the standard 60s.
+const ACTION_TYPE_GRACE_MS: Record<string, number> = {
+  whatsapp_campaign_send: 5 * 60 * 1000,
+};
+
+export function getApproveToShipGraceMs(actionType: string): number {
+  return ACTION_TYPE_GRACE_MS[actionType] ?? APPROVE_TO_SHIP_GRACE_MS;
+}
 // UAE is UTC+4 year-round (no DST). All "today" cutoffs in the Inbox follow
 // the owner's calendar, not the Railway-box UTC clock.
 const GST_OFFSET_MS = 4 * 60 * 60 * 1000;
@@ -205,15 +216,15 @@ export async function approveDraft(
   options: { shipAt?: Date } = {}
 ): Promise<ApproveResult> {
   const ownerUserId = await resolveUserIdFromClerk(clerkId);
-  const shipAt = options.shipAt ?? new Date(Date.now() + APPROVE_TO_SHIP_GRACE_MS);
   const status = options.shipAt ? DraftActionStatus.scheduled : DraftActionStatus.approved;
   const now = new Date();
 
-  // Branch on kind so the bundle path can cascade. Read kind+status with one
-  // query so the race-loss path can still distinguish 404 vs 410 vs 409.
+  // Branch on kind so the bundle path can cascade. Read kind+status+actionType
+  // with one query so the race-loss path can still distinguish 404 vs 410 vs
+  // 409, and so the grace window can be sized per actionType.
   const target = await prisma.draftAction.findFirst({
     where: { id: draftId, restaurantId },
-    select: { id: true, kind: true, status: true, expiresAt: true },
+    select: { id: true, kind: true, status: true, expiresAt: true, actionType: true },
   });
 
   if (!target) throw new ApiError("Draft not found", 404);
@@ -224,6 +235,11 @@ export async function approveDraft(
     throw new ApiError("This draft has expired. Ask Sous Chef to redraft it.", 410);
   }
 
+  // An explicit caller-supplied shipAt always wins; otherwise the grace window
+  // is sized by the draft's own actionType (whatsapp_campaign_send gets 5min).
+  const shipAt =
+    options.shipAt ?? new Date(now.getTime() + getApproveToShipGraceMs(target.actionType));
+
   if (target.kind === DraftActionKind.bundle) {
     return approveBundleDraft({
       draftId,
@@ -232,6 +248,7 @@ export async function approveDraft(
       shipAt,
       status,
       now,
+      explicitShipAt: options.shipAt,
     });
   }
 
@@ -262,8 +279,13 @@ async function approveBundleDraft(args: {
   shipAt: Date;
   status: DraftActionStatus;
   now: Date;
+  // When the caller pinned an explicit shipAt, every row (parent + children)
+  // uses it verbatim. When absent, each child gets a grace sized by its OWN
+  // actionType so a whatsapp_campaign_send child still earns its 5-min undo
+  // even inside a bundle.
+  explicitShipAt?: Date;
 }): Promise<ApproveResult> {
-  const { draftId, restaurantId, ownerUserId, shipAt, status, now } = args;
+  const { draftId, restaurantId, ownerUserId, shipAt, status, now, explicitShipAt } = args;
 
   const { primary, children } = await prisma.$transaction(async (tx) => {
     const parentUpdate = await tx.draftAction.updateMany({
@@ -281,15 +303,33 @@ async function approveBundleDraft(args: {
 
     // Cascade to children: only pending children get approved. Children in
     // other terminal states (already rejected one before approving the
-    // bundle) are left alone — owner explicitly chose to skip them.
-    await tx.draftAction.updateMany({
+    // bundle) are left alone — owner explicitly chose to skip them. Group the
+    // update by actionType so each child's shipAt reflects its own grace
+    // window (no extra reads in the common single-grace case).
+    const pendingChildren = await tx.draftAction.findMany({
       where: {
         parentDraftId: draftId,
         restaurantId,
         status: DraftActionStatus.pending,
       },
-      data: { status, decisionAt: now, decidedBy: ownerUserId, shipAt },
+      select: { id: true, actionType: true },
     });
+    const childIdsByGrace = new Map<number, string[]>();
+    for (const child of pendingChildren) {
+      const graceMs = explicitShipAt
+        ? -1 // sentinel: use the pinned shipAt for everything
+        : getApproveToShipGraceMs(child.actionType);
+      const bucket = childIdsByGrace.get(graceMs) ?? [];
+      bucket.push(child.id);
+      childIdsByGrace.set(graceMs, bucket);
+    }
+    for (const [graceMs, ids] of childIdsByGrace) {
+      const childShipAt = graceMs < 0 ? shipAt : new Date(now.getTime() + graceMs);
+      await tx.draftAction.updateMany({
+        where: { id: { in: ids }, restaurantId, status: DraftActionStatus.pending },
+        data: { status, decisionAt: now, decidedBy: ownerUserId, shipAt: childShipAt },
+      });
+    }
 
     const refreshedParent = await tx.draftAction.findUnique({ where: { id: draftId } });
     const refreshedChildren = await tx.draftAction.findMany({
@@ -611,6 +651,8 @@ async function dispatchShip(draft: DraftAction): Promise<ShipResult> {
       return shipAdCampaignCreate(draft);
     case "whatsapp_campaign_create":
       return shipWhatsappCampaignCreate(draft);
+    case "whatsapp_campaign_send":
+      return shipWhatsappCampaignSend(draft);
     default:
       throw new Error(`No shipper registered for actionType="${draft.actionType}"`);
   }
@@ -1295,6 +1337,65 @@ async function shipWhatsappCampaignCreate(draft: DraftAction): Promise<ShipResul
     ok: true,
     message: `WhatsApp campaign "${campaign.name}" drafted — open CRM to review and send`,
     data: { campaignId: campaign.id },
+  };
+}
+
+interface WhatsappCampaignSendPayload {
+  type: "inactive_30" | "weekend_special" | "new_promotion";
+  inactiveDays?: number;
+  templateName?: string;
+  body?: string;
+  name?: string;
+  promotionId?: string | null;
+  restaurantName: string;
+}
+
+/**
+ * Unlike whatsapp_campaign_create (stages a CRM draft for bundles), approving
+ * this draft IS the final confirmation: the 5-minute grace window is the undo.
+ * Eligibility is re-resolved inside executeCampaignSend at ship time, so
+ * consents changed during the grace are honored.
+ */
+async function shipWhatsappCampaignSend(draft: DraftAction): Promise<ShipResult> {
+  const payload = draft.payload as unknown as WhatsappCampaignSendPayload;
+  if (!payload?.type || !payload.restaurantName) {
+    throw new Error("whatsapp_campaign_send payload missing type/restaurantName");
+  }
+
+  const result = await executeCampaignSend({
+    restaurantId: draft.restaurantId,
+    restaurantName: payload.restaurantName,
+    type: payload.type,
+    inactiveDays: payload.inactiveDays,
+    templateName: payload.templateName,
+    body: payload.body,
+    name: payload.name,
+    promotionId: payload.promotionId ?? null,
+  });
+
+  await prisma.campaign.update({
+    where: { id: result.campaign.id },
+    data: { sourceDraftId: draft.id },
+  });
+
+  const skipped = result.skippedFrequency + result.skippedTier;
+  const message =
+    result.mode === "meta_cloud_api"
+      ? `Sent to ${result.sent} of ${result.targeted} customers${result.failed ? ` (${result.failed} failed)` : ""}${skipped ? ` (${skipped} skipped by caps)` : ""}.`
+      : `Logged ${result.sent} tap-to-send WhatsApp links in CRM (no Meta API connection — open CRM to send).`;
+
+  return {
+    ok: true,
+    message,
+    data: {
+      campaignId: result.campaign.id,
+      targeted: result.targeted,
+      sent: result.sent,
+      failed: result.failed,
+      skippedFrequency: result.skippedFrequency,
+      skippedTier: result.skippedTier,
+      mode: result.mode,
+    },
   };
 }
 

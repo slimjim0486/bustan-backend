@@ -911,6 +911,7 @@ model Campaign {
   templateName  String         @map("template_name")
   body          String
   targetSegment String         @map("target_segment")
+  sourceDraftId String?        @map("source_draft_id")
   targetCount   Int            @default(0) @map("target_count")
   loggedCount   Int            @default(0) @map("logged_count")
   createdAt     DateTime       @default(now()) @map("created_at")

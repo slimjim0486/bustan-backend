@@ -11,6 +11,7 @@ import {
   consumePendingAction,
 } from "@/lib/pending-actions";
 import { createDraft, type CreateDraftParams } from "@/services/draft-actions";
+import { resolveCampaignAudience } from "@/services/campaign-send";
 import { DraftActionKind, DraftActionSource } from "@prisma/client";
 import { pullGoogleReviews, listUnansweredReviews } from "@/services/reviews/pull-reviews";
 import { draftReplies } from "@/services/reviews/reply-drafter";
@@ -392,6 +393,23 @@ export const OWNER_TOOLS: Anthropic.Tool[] = [
         item_ids: { type: "array", items: { type: "string" }, description: "ONLY when changing which items are included; replaces the full item list." },
       },
       required: ["promotion_id"],
+    },
+  },
+  {
+    name: "send_whatsapp_campaign",
+    description:
+      "Draft a WhatsApp marketing broadcast to a customer segment. Owner approval in the Inbox SENDS IT (after a 5-minute undo window) — say so when presenting the draft. Segments: inactive customers (optionally a custom day threshold), weekend_special, or new_promotion (pass promotion_id to feature one). Only opted-in customers with provable consent receive it. Call get_whatsapp_status / list_whatsapp_templates first if unsure of template availability.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        segment: { type: "string", enum: ["inactive", "weekend_special", "new_promotion"] },
+        inactive_days: { type: "number", description: "For segment=inactive: days since last order (7-365). Default 30." },
+        template_name: { type: "string", description: "WhatsApp template to use. Omit to use the default for the segment." },
+        body: { type: "string", description: "Custom message body (used in link mode or when no approved template). Supports {{name}}." },
+        name: { type: "string", description: "Campaign name for the CRM list." },
+        promotion_id: { type: "string", description: "Promotion to feature (required for new_promotion segment)." },
+      },
+      required: ["segment"],
     },
   },
   {
@@ -883,6 +901,8 @@ export async function executeTool(
         return await execCreatePromotion(restaurantId, clerkId, entitlements, input);
       case "update_promotion":
         return await execUpdatePromotion(restaurantId, clerkId, input);
+      case "send_whatsapp_campaign":
+        return await execSendWhatsappCampaign(restaurantId, clerkId, input);
       case "toggle_availability":
         return await execToggleAvailability(restaurantId, clerkId, input);
       case "create_menu_item":
@@ -2702,6 +2722,115 @@ async function execUpdatePromotion(
       draft_id: draft.id,
       message: `Drafted ${ending ? "ending" : "update of"} "${promo.title}" — awaiting owner approval in the Inbox.`,
       changes,
+    }),
+    draftId: draft.id,
+  };
+}
+
+async function execSendWhatsappCampaign(
+  restaurantId: string,
+  clerkId: string,
+  input: Input
+): Promise<ToolResult> {
+  const segment = String(input.segment ?? "");
+  const type =
+    segment === "inactive" ? ("inactive_30" as const)
+    : segment === "weekend_special" ? ("weekend_special" as const)
+    : segment === "new_promotion" ? ("new_promotion" as const)
+    : null;
+  if (!type) {
+    return { content: JSON.stringify({ error: "Unknown segment. Use inactive, weekend_special, or new_promotion." }) };
+  }
+
+  let inactiveDays: number | undefined;
+  if (segment === "inactive") {
+    inactiveDays = input.inactive_days != null ? Number(input.inactive_days) : 30;
+    if (!Number.isFinite(inactiveDays) || inactiveDays < 7 || inactiveDays > 365) {
+      return { content: JSON.stringify({ error: "inactive_days must be between 7 and 365." }) };
+    }
+  }
+
+  let promotion: { id: string; title: string } | null = null;
+  if (input.promotion_id) {
+    promotion = await prisma.promotion.findFirst({
+      where: { id: String(input.promotion_id), restaurantId },
+      select: { id: true, title: true },
+    });
+    if (!promotion) {
+      return { content: JSON.stringify({ error: "promotion_not_found", hint: "Call get_promotion_list for valid promotion ids." }) };
+    }
+  }
+  if (type === "new_promotion" && !promotion) {
+    return { content: JSON.stringify({ error: "new_promotion segment requires promotion_id." }) };
+  }
+
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { name: true },
+  });
+  const templateName = input.template_name ? String(input.template_name) : type;
+
+  const audience = await resolveCampaignAudience({ restaurantId, type, inactiveDays, templateName });
+
+  if (audience.eligibleCount === 0) {
+    return {
+      content: JSON.stringify({
+        error: "segment_empty",
+        opted_in_total: audience.optedInTotal,
+        hint:
+          audience.optedInTotal === 0
+            ? "No customers have opted in to WhatsApp marketing yet."
+            : "Opted-in customers exist but none match this segment. Try a different segment or a larger inactive_days window.",
+      }),
+    };
+  }
+
+  const recipientLabel = audience.capped
+    ? `first ${audience.eligibleCount} of ${audience.optedInTotal}`
+    : `${audience.eligibleCount}`;
+  const segmentLabel =
+    segment === "inactive" ? `customers inactive ${inactiveDays} days` : segment.replace("_", " ");
+  const modeNote =
+    audience.mode === "meta_cloud_api"
+      ? "sends automatically via WhatsApp"
+      : "stages tap-to-send links in CRM (Meta API not connected or template not approved)";
+
+  const draft = await createDraft(restaurantId, clerkId, {
+    actionType: "whatsapp_campaign_send",
+    source: DraftActionSource.chat,
+    title: `WhatsApp blast · ${recipientLabel} customer${audience.eligibleCount === 1 ? "" : "s"}`,
+    subtitle: `${segmentLabel} · ${modeNote} · 5-min undo after approval`,
+    iconKey: "whatsapp",
+    affectedSurface: "/dashboard/crm",
+    payload: {
+      type,
+      inactiveDays,
+      templateName,
+      body: input.body ? String(input.body) : undefined,
+      name: input.name ? String(input.name) : undefined,
+      promotionId: promotion?.id ?? null,
+      restaurantName: restaurant?.name ?? "",
+    },
+    preview: {
+      recipients: audience.eligibleCount,
+      capped: audience.capped,
+      optedInTotal: audience.optedInTotal,
+      segment: segmentLabel,
+      template: templateName,
+      templateStatus: audience.templateStatus,
+      mode: audience.mode,
+      promotion: promotion?.title ?? null,
+    },
+  });
+
+  return {
+    content: JSON.stringify({
+      success: true,
+      draft_id: draft.id,
+      recipients: audience.eligibleCount,
+      capped: audience.capped,
+      mode: audience.mode,
+      message: `Drafted a broadcast to ${recipientLabel} eligible customers (${segmentLabel}). Approving it in the Inbox ${audience.mode === "meta_cloud_api" ? "SENDS it after a 5-minute undo window" : "stages tap-to-send links in CRM"} — make sure the owner knows.`,
     }),
     draftId: draft.id,
   };

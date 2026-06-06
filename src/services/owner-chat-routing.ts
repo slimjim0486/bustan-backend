@@ -15,6 +15,7 @@ export const WRITE_TOOL_NAMES = new Set([
   "update_menu_items_bulk",
   "create_promotion",
   "update_promotion",
+  "send_whatsapp_campaign",
   "toggle_availability",
   "create_menu_item",
   "create_menu_section",
