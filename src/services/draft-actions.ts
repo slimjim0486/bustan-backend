@@ -814,8 +814,8 @@ async function shipPromotionUpdate(draft: DraftAction): Promise<ShipResult> {
         where: { id: { in: payload.replaceItemIds }, restaurantId: draft.restaurantId },
         select: { id: true },
       });
-      if (owned.length === 0) {
-        throw new Error("None of the requested menu items belong to this restaurant");
+      if (owned.length !== payload.replaceItemIds.length) {
+        throw new Error("promotion_update payload contains items not belonging to this restaurant");
       }
       await tx.promotionItem.deleteMany({ where: { promotionId: promo.id } });
       data.items = {
