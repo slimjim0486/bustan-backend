@@ -1142,13 +1142,13 @@ async function shipMenuDescriptionsBulk(draft: DraftAction): Promise<ShipResult>
 
 interface MenuItemsDeletePayload {
   menuItemIds: string[];
-  sectionIds: string[];
+  sections: Array<{ id: string; previewedCount: number }>;
 }
 
 async function shipMenuItemsDelete(draft: DraftAction): Promise<ShipResult> {
   const payload = draft.payload as unknown as MenuItemsDeletePayload;
   const itemIds = payload?.menuItemIds ?? [];
-  const sectionIds = payload?.sectionIds ?? [];
+  const sectionIds = (payload?.sections ?? []).map((s) => s.id);
   if (itemIds.length === 0 && sectionIds.length === 0) {
     throw new Error("menu_items_delete payload empty");
   }
@@ -1157,6 +1157,19 @@ async function shipMenuItemsDelete(draft: DraftAction): Promise<ShipResult> {
   let cascadeItems = 0;
   let deletedSections = 0;
   await prisma.$transaction(async (tx) => {
+    // Staleness guard: a pending draft can be approved days after preview. If a
+    // targeted section gained items since the owner saw the blast radius, abort —
+    // never permanently delete rows that were never previewed. (Shrinkage is safe.)
+    for (const section of payload.sections ?? []) {
+      const liveCount = await tx.menuItem.count({
+        where: { sectionId: section.id, restaurantId: draft.restaurantId },
+      });
+      if (liveCount > section.previewedCount) {
+        throw new Error(
+          `Section contents changed since this draft was created (${liveCount} items now vs ${section.previewedCount} previewed) — ask Sous Chef to redraft the deletion.`
+        );
+      }
+    }
     if (itemIds.length) {
       const res = await tx.menuItem.deleteMany({ where: { id: { in: itemIds }, restaurantId: draft.restaurantId } });
       deletedItems = res.count;

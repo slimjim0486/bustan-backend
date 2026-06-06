@@ -3147,7 +3147,7 @@ async function execDeleteMenuItems(
     iconKey: "menu",
     affectedSurface: "/dashboard/menu",
     childCount: totalCount,
-    payload: { menuItemIds: directItems.map((i) => i.id), sectionIds: sections.map((s) => s.id) },
+    payload: { menuItemIds: directItems.map((i) => i.id), sections: sections.map((s) => ({ id: s.id, previewedCount: s.items.length })) },
     preview: {
       items: directItems.map((i) => i.name),
       sections: sections.map((s) => ({ name: s.name, cascadeCount: s.items.length, itemNames: s.items.map((i) => i.name) })),
