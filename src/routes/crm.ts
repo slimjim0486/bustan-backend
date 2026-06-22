@@ -66,6 +66,35 @@ const customersQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
+const conversationSearchQuerySchema = z.object({
+  search: z.string().trim().max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(25),
+});
+
+// Pure, exported for unit testing (the route stays thin). Mirrors the
+// customer-search semantics: case-insensitive substring on customerName OR
+// customerPhone, plus a digit-stripped phone clause so "+971 50 749" and
+// "97150749" both match. WhatsAppConversation has no normalizedPhone column,
+// so the digit clause targets customerPhone directly.
+export function buildConversationSearchWhere(
+  restaurantId: string,
+  search?: string
+): Prisma.WhatsAppConversationWhereInput {
+  const term = search?.trim();
+  if (!term) {
+    return { restaurantId };
+  }
+  const phoneDigits = term.replace(/\D/g, "");
+  return {
+    restaurantId,
+    OR: [
+      { customerName: { contains: term, mode: "insensitive" } },
+      { customerPhone: { contains: term, mode: "insensitive" } },
+      ...(phoneDigits.length >= 3 ? [{ customerPhone: { contains: phoneDigits } }] : []),
+    ],
+  };
+}
+
 const integrationSchema = z.object({
   code: z.string().min(8),
   signupSession: z
@@ -978,6 +1007,39 @@ export const crmRoute = new Hono<{
       });
 
       return c.json({ template: record }, 201);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  .get("/:restaurantId/conversations", requireAuth, async (c) => {
+    try {
+      const restaurantId = c.req.param("restaurantId");
+      const auth = c.get("auth");
+      await getOwnedRestaurant(restaurantId, auth.clerkId);
+      const { search, limit } = conversationSearchQuerySchema.parse(
+        Object.fromEntries(new URL(c.req.url).searchParams.entries())
+      );
+
+      const rows = await prisma.whatsAppConversation.findMany({
+        where: buildConversationSearchWhere(restaurantId, search),
+        orderBy: { lastMessageAt: "desc" },
+        take: limit,
+        include: {
+          messages: { orderBy: { createdAt: "desc" }, take: 1 },
+        },
+      });
+
+      return c.json({
+        conversations: rows.map((conversation) => ({
+          id: conversation.id,
+          customerId: conversation.customerId,
+          customerPhone: conversation.customerPhone,
+          customerName: conversation.customerName,
+          lastMessageAt: conversation.lastMessageAt,
+          unreadCount: conversation.unreadCount,
+          latestMessageBody: conversation.messages[0]?.body ?? null,
+        })),
+      });
     } catch (error) {
       return errorResponse(c, error);
     }
