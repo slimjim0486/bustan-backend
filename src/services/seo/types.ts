@@ -115,6 +115,12 @@ export interface CitationPlatformResult {
     phone: boolean | null;
     hours: boolean | null;
   };
+  /**
+   * 0..1 confidence that the matched listing is this restaurant (name match).
+   * `null` when not comparable. Lets the report distinguish a confirmed match
+   * from a likely one. Owner-supplied/saved URLs are trusted at 1.
+   */
+  nameConfidence: number | null;
 }
 
 export interface CitationsData {

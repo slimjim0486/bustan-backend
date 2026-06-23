@@ -149,6 +149,9 @@ function scoreCitations(output: CollectorOutput): ScorecardPillar {
   const inconsistent = citations.platforms
     .filter((platform) => Object.values(platform.matches).some((value) => value === false))
     .map((platform) => platform.platform);
+  const likely = citations.platforms
+    .filter((platform) => platform.found && (platform.nameConfidence ?? 1) < 0.85)
+    .map((platform) => platform.platform);
 
   return {
     key: "citations",
@@ -161,6 +164,7 @@ function scoreCitations(output: CollectorOutput): ScorecardPillar {
     signals: [
       `${foundCount}/${citations.platforms.length} tracked platforms found.`,
       `${Math.round(matchRate * 100)}% of comparable NAP fields match.`,
+      ...(likely.length ? [`Likely (unverified) match on ${likely.join(", ")} — confirm the listing.`] : []),
     ],
   };
 }

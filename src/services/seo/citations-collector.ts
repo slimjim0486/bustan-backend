@@ -1,5 +1,6 @@
 import { runActor } from "@/lib/apify";
 import { env } from "@/lib/env";
+import { NAME_MATCH_THRESHOLD, isNameMatch, nameMatchConfidence } from "./name-match";
 import type {
   CitationPlatformResult,
   CitationsData,
@@ -76,11 +77,12 @@ function normalizePlatformItem(
     phone,
     hours,
     matches: {
-      name: looseMatch(name, restaurant.name),
+      name: isNameMatch(name, restaurant.name),
       address: looseMatch(address, restaurant.address ?? restaurant.location),
       phone: phoneMatch(phone, restaurant.phone),
       hours: hours && restaurant.operatingHours ? true : null,
     },
+    nameConfidence: nameMatchConfidence(name, restaurant.name),
   };
 }
 
@@ -111,7 +113,11 @@ function searchQueryForPlatform(
   const domains = PLATFORM_DOMAINS[platform]
     .map((domain) => `site:${domain}`)
     .join(" OR ");
-  return `${domains} "${restaurant.name}" "${cityOrLocation(restaurant)}"`;
+  // Unquoted terms: exact-phrase quoting around the name made Google return zero
+  // results whenever the stored name differed at all from the listing title
+  // (extra word, punctuation, transliteration). The confidence matcher below
+  // does the filtering instead, so let Google surface near-name candidates.
+  return `${domains} ${restaurant.name} ${cityOrLocation(restaurant)}`;
 }
 
 function organicResultsFromItems(items: Record<string, unknown>[]) {
@@ -149,20 +155,29 @@ async function discoverPlatformWithGoogleSearch(
     }
   );
 
-  const match = organicResultsFromItems(result.items).find((item) => {
-    const url = text(item.url) ?? text(item.link);
-    const title = text(item.title) ?? text(item.name);
-    return hostMatchesPlatform(url, platform) && looseMatch(title, restaurant.name) !== false;
-  });
+  // Score every on-domain candidate and keep the most confident one above the
+  // threshold, instead of accepting the first substring hit.
+  const match = organicResultsFromItems(result.items)
+    .map((item) => {
+      const url = text(item.url) ?? text(item.link);
+      const title = text(item.title) ?? text(item.name);
+      const confidence = hostMatchesPlatform(url, platform)
+        ? nameMatchConfidence(title, restaurant.name) ?? 0
+        : 0;
+      return { item, url, title, confidence };
+    })
+    .filter((candidate) => candidate.url && candidate.confidence >= NAME_MATCH_THRESHOLD)
+    .sort((a, b) => b.confidence - a.confidence)
+    .at(0);
 
-  const url = text(match?.url) ?? text(match?.link);
+  const url = match?.url ?? null;
   return {
     platform: url
       ? normalizePlatformItem(
           platform,
           url,
           {
-            name: text(match?.title) ?? text(match?.name) ?? restaurant.name,
+            name: match?.title ?? restaurant.name,
           },
           restaurant
         )
