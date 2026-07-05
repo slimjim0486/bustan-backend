@@ -2115,6 +2115,10 @@ model DraftAction {
   source     DraftActionSource
   status     DraftActionStatus @default(pending)
 
+  channel        String  @default("dashboard_chat") @map("channel")        // owner_whatsapp | dashboard_chat | diner_public | system_cron
+  autonomyTier   Int     @default(2) @map("autonomy_tier")                 // 0-3 snapshot at proposal time (spec §3)
+  idempotencyKey String? @unique @map("idempotency_key")
+
   title           String
   subtitle        String?
   iconKey         String? @map("icon_key")
@@ -2156,6 +2160,7 @@ model DraftAction {
   @@index([restaurantId, source])
   @@index([parentDraftId])
   @@index([shipAt])
+  @@index([restaurantId, channel, createdAt(sort: Desc)])
   @@map("draft_actions")
 }
 
