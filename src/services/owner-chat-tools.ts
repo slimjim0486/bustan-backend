@@ -12,6 +12,8 @@ import {
 } from "@/lib/pending-actions";
 import { createDraft, type CreateDraftParams } from "@/services/draft-actions";
 import { resolveCampaignAudience } from "@/services/campaign-send";
+import { assertToolAllowed, getToolTier, type AutonomyTier } from "@/services/agent/autonomy-tiers";
+import { deriveIdempotencyKey, type AgentChannel } from "@/services/agent/idempotency";
 import { DraftActionKind, DraftActionSource } from "@prisma/client";
 import { pullGoogleReviews, listUnansweredReviews } from "@/services/reviews/pull-reviews";
 import { draftReplies } from "@/services/reviews/reply-drafter";
@@ -59,6 +61,18 @@ export interface ToolResult {
    * persistent inbox card.
    */
   draftId?: string;
+}
+
+/**
+ * Agent-as-Employee Phase 0 (spec §3, §10.2): the channel/tier/idempotency
+ * triple resolved once at the top of `executeTool` and threaded down into
+ * every `execXxx` helper that calls `createDraft`, so every draft is stamped
+ * with where the request came from and what tier gated it.
+ */
+interface ExecMeta {
+  channel: AgentChannel;
+  autonomyTier: AutonomyTier;
+  idempotencyKey?: string;
 }
 
 // Structured, self-correctable lookup error: gives the model the found/missing
@@ -901,8 +915,18 @@ export async function executeTool(
   restaurantId: string,
   clerkId: string,
   entitlements: PlanEntitlements,
-  input: Input
+  input: Input,
+  options: { channel?: AgentChannel; idempotencyScope?: string } = {}
 ): Promise<ToolResult> {
+  // Tier-3 / unknown tools throw before any side effect — fail closed.
+  assertToolAllowed(toolName);
+  const channel = options.channel ?? "dashboard_chat";
+  const autonomyTier = getToolTier(toolName);
+  const idempotencyKey = options.idempotencyScope
+    ? deriveIdempotencyKey({ restaurantId, toolName, args: input, scope: options.idempotencyScope })
+    : undefined;
+  const meta: ExecMeta = { channel, autonomyTier, idempotencyKey };
+
   try {
     // For read tools that support cross-brand queries, resolve the target
     const crossBrandTools = new Set([
@@ -956,35 +980,35 @@ export async function executeTool(
       case "get_support_ticket":
         return await execGetSupportTicket(restaurantId, input);
       case "enhance_descriptions":
-        return await execEnhanceDescriptions(restaurantId, clerkId, entitlements, input);
+        return await execEnhanceDescriptions(restaurantId, clerkId, entitlements, input, meta);
       case "suggest_dietary_tags":
-        return await execSuggestDietaryTags(restaurantId, clerkId, entitlements, input);
+        return await execSuggestDietaryTags(restaurantId, clerkId, entitlements, input, meta);
       case "update_menu_item":
-        return await execUpdateMenuItem(restaurantId, clerkId, input);
+        return await execUpdateMenuItem(restaurantId, clerkId, input, meta);
       case "update_menu_items_bulk":
-        return await execUpdateMenuItemsBulk(restaurantId, clerkId, input);
+        return await execUpdateMenuItemsBulk(restaurantId, clerkId, input, meta);
       case "create_promotion":
-        return await execCreatePromotion(restaurantId, clerkId, entitlements, input);
+        return await execCreatePromotion(restaurantId, clerkId, entitlements, input, meta);
       case "update_promotion":
-        return await execUpdatePromotion(restaurantId, clerkId, input);
+        return await execUpdatePromotion(restaurantId, clerkId, input, meta);
       case "send_whatsapp_campaign":
-        return await execSendWhatsappCampaign(restaurantId, clerkId, input);
+        return await execSendWhatsappCampaign(restaurantId, clerkId, input, meta);
       case "create_ad_campaign":
-        return await execCreateAdCampaign(restaurantId, clerkId, entitlements, input);
+        return await execCreateAdCampaign(restaurantId, clerkId, entitlements, input, meta);
       case "generate_dish_images":
-        return await execGenerateDishImages(restaurantId, clerkId, entitlements, input);
+        return await execGenerateDishImages(restaurantId, clerkId, entitlements, input, meta);
       case "delete_menu_items":
-        return await execDeleteMenuItems(restaurantId, clerkId, input);
+        return await execDeleteMenuItems(restaurantId, clerkId, input, meta);
       case "toggle_availability":
-        return await execToggleAvailability(restaurantId, clerkId, input);
+        return await execToggleAvailability(restaurantId, clerkId, input, meta);
       case "create_menu_item":
-        return await execCreateMenuItem(restaurantId, clerkId, input);
+        return await execCreateMenuItem(restaurantId, clerkId, input, meta);
       case "create_menu_section":
-        return await execCreateMenuSection(restaurantId, clerkId, input);
+        return await execCreateMenuSection(restaurantId, clerkId, input, meta);
       case "update_restaurant":
-        return await execUpdateRestaurant(restaurantId, clerkId, input);
+        return await execUpdateRestaurant(restaurantId, clerkId, input, meta);
       case "publish_menu":
-        return await execPublishMenu(restaurantId, clerkId, input);
+        return await execPublishMenu(restaurantId, clerkId, input, meta);
       case "run_menu_analysis":
         return await execRunMenuAnalysis(restaurantId, clerkId, entitlements, input);
 
@@ -1036,11 +1060,11 @@ export async function executeTool(
 
       // Reviews
       case "draft_review_replies":
-        return await execDraftReviewReplies(restaurantId, clerkId, input);
+        return await execDraftReviewReplies(restaurantId, clerkId, input, meta);
 
       // Macro tools — produce bundles
       case "plan_marketing_week":
-        return await execPlanMarketingWeek(restaurantId, clerkId, input);
+        return await execPlanMarketingWeek(restaurantId, clerkId, input, meta);
 
       case "escalate_to_planner":
         return {
@@ -1758,7 +1782,8 @@ async function execEnhanceDescriptions(
   restaurantId: string,
   clerkId: string,
   entitlements: PlanEntitlements,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (input.execute && input.pending_action_id) {
     const action = consumePendingAction(String(input.pending_action_id), restaurantId, clerkId);
@@ -1871,6 +1896,7 @@ async function execEnhanceDescriptions(
         after: result.description,
       },
       menuItemId: item.id,
+      ...meta,
     });
 
     return {
@@ -1969,6 +1995,7 @@ async function execEnhanceDescriptions(
         after: desc,
       })),
     },
+    ...meta,
   });
 
   return {
@@ -2000,7 +2027,8 @@ async function execSuggestDietaryTags(
   restaurantId: string,
   clerkId: string,
   entitlements: PlanEntitlements,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (input.execute && input.pending_action_id) {
     const action = consumePendingAction(String(input.pending_action_id), restaurantId, clerkId);
@@ -2153,6 +2181,7 @@ async function execSuggestDietaryTags(
         tags: s.tags.map((t) => ({ label: t.label, confidence: t.confidence })),
       })),
     },
+    ...meta,
   });
 
   return {
@@ -2183,7 +2212,8 @@ async function execSuggestDietaryTags(
 async function execUpdateMenuItem(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (input.execute && input.pending_action_id) {
     const action = consumePendingAction(String(input.pending_action_id), restaurantId, clerkId);
@@ -2273,6 +2303,7 @@ async function execUpdateMenuItem(
       changes: changes.map((c) => ({ field: c.label, from: c.before, to: c.after })),
     },
     menuItemId: itemId,
+    ...meta,
   });
 
   return {
@@ -2296,7 +2327,8 @@ async function execUpdateMenuItem(
 async function execUpdateMenuItemsBulk(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   const updates = input.updates as Array<Input>;
 
@@ -2390,6 +2422,7 @@ async function execUpdateMenuItemsBulk(
       count: changes.length,
       changes: changes.map((c) => ({ item: c.label, updates: c.after })),
     },
+    ...meta,
   });
 
   return {
@@ -2413,7 +2446,8 @@ async function execCreatePromotion(
   restaurantId: string,
   clerkId: string,
   entitlements: PlanEntitlements,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (input.execute && input.pending_action_id) {
     const action = consumePendingAction(String(input.pending_action_id), restaurantId, clerkId);
@@ -2636,6 +2670,7 @@ async function execCreatePromotion(
       items: items.map((i) => i.name),
       moment: momentName ? { id: sourceMomentId, name: momentName, year: sourceMomentYear } : null,
     },
+    ...meta,
   });
 
   const baseTotal = items.reduce((sum, item) => sum + Number(item.price), 0);
@@ -2694,7 +2729,8 @@ async function execCreatePromotion(
 async function execUpdatePromotion(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   const promotionId = String(input.promotion_id ?? "");
   const promo = await prisma.promotion.findFirst({
@@ -2787,6 +2823,7 @@ async function execUpdatePromotion(
       replaceItemIds: replaceItemIds ?? undefined,
     },
     preview: { promotion: promo.title, changes },
+    ...meta,
   });
 
   return {
@@ -2803,7 +2840,8 @@ async function execUpdatePromotion(
 async function execSendWhatsappCampaign(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   const segment = String(input.segment ?? "");
   const type =
@@ -2897,6 +2935,7 @@ async function execSendWhatsappCampaign(
       mode: audience.mode,
       promotion: promotion?.title ?? null,
     },
+    ...meta,
   });
 
   return {
@@ -2916,7 +2955,8 @@ async function execCreateAdCampaign(
   restaurantId: string,
   clerkId: string,
   entitlements: PlanEntitlements,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (!entitlements.adStudioEnabled) {
     return { content: JSON.stringify({ error: "not_eligible", hint: "Ad Studio requires the Pro plan." }) };
@@ -3019,6 +3059,7 @@ async function execCreateAdCampaign(
       countries: brief.countries,
       moment: sourceMoment ? { id: sourceMoment.id, name: sourceMoment.name, year: sourceMoment.year } : null,
     },
+    ...meta,
   });
 
   return {
@@ -3035,7 +3076,8 @@ async function execGenerateDishImages(
   restaurantId: string,
   clerkId: string,
   entitlements: PlanEntitlements,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   const PER_DRAFT_CAP = 15;
 
@@ -3098,6 +3140,7 @@ async function execGenerateDishImages(
       items: items.map((i) => i.name),
       quotaRemainingAfter: remaining === Number.MAX_SAFE_INTEGER ? null : remaining - items.length,
     },
+    ...meta,
   });
 
   return {
@@ -3114,7 +3157,8 @@ async function execGenerateDishImages(
 async function execDeleteMenuItems(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   const itemIds = Array.isArray(input.menu_item_ids) ? (input.menu_item_ids as string[]).map(String) : [];
   const sectionIds = Array.isArray(input.section_ids) ? (input.section_ids as string[]).map(String) : [];
@@ -3173,6 +3217,7 @@ async function execDeleteMenuItems(
       promotionWarnings: promoWarnings,
       permanent: true,
     },
+    ...meta,
   });
 
   return {
@@ -3190,7 +3235,8 @@ async function execDeleteMenuItems(
 async function execToggleAvailability(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (input.execute && input.pending_action_id) {
     const action = consumePendingAction(String(input.pending_action_id), restaurantId, clerkId);
@@ -3257,6 +3303,7 @@ async function execToggleAvailability(
         nextStatus: available ? "Available" : "Sold out",
       })),
     },
+    ...meta,
   });
 
   return {
@@ -3286,7 +3333,8 @@ async function execToggleAvailability(
 async function execCreateMenuItem(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (input.execute && input.pending_action_id) {
     const action = consumePendingAction(String(input.pending_action_id), restaurantId, clerkId);
@@ -3357,6 +3405,7 @@ async function execCreateMenuItem(
       price: formatPrice(Number(input.price)),
       description: input.description ? String(input.description) : null,
     },
+    ...meta,
   });
 
   return {
@@ -3382,7 +3431,8 @@ async function execCreateMenuItem(
 async function execCreateMenuSection(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (input.execute && input.pending_action_id) {
     const action = consumePendingAction(String(input.pending_action_id), restaurantId, clerkId);
@@ -3425,6 +3475,7 @@ async function execCreateMenuSection(
     affectedSurface: "/dashboard/menu",
     payload: { name: String(input.name) },
     preview: { sectionName: String(input.name) },
+    ...meta,
   });
 
   return {
@@ -3446,7 +3497,8 @@ async function execCreateMenuSection(
 async function execUpdateRestaurant(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (input.execute && input.pending_action_id) {
     const action = consumePendingAction(String(input.pending_action_id), restaurantId, clerkId);
@@ -3522,6 +3574,7 @@ async function execUpdateRestaurant(
     preview: {
       changes: changes.map((c) => ({ field: c.label, from: c.before, to: c.after })),
     },
+    ...meta,
   });
 
   return {
@@ -3543,7 +3596,8 @@ async function execUpdateRestaurant(
 async function execPublishMenu(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   if (input.execute && input.pending_action_id) {
     const action = consumePendingAction(String(input.pending_action_id), restaurantId, clerkId);
@@ -3599,6 +3653,7 @@ async function execPublishMenu(
       currentStatus: restaurant.isPublished ? "Published" : "Unpublished",
       nextStatus: publish ? "Published" : "Unpublished",
     },
+    ...meta,
   });
 
   return {
@@ -4502,8 +4557,37 @@ async function execGetWidgetStatus(restaurantId: string): Promise<ToolResult> {
 async function execPlanMarketingWeek(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
+  // Idempotency dedup: a webhook retry (or duplicate tool call) carries the
+  // same idempotencyKey as the original request. The bundle write below is
+  // a raw $transaction (not createDraft), so it doesn't get the dedup check
+  // createDraft does for free — re-run this before doing any other work to
+  // avoid re-creating the whole parent+children bundle on retry.
+  if (meta?.idempotencyKey) {
+    const existing = await prisma.draftAction.findUnique({
+      where: { idempotencyKey: meta.idempotencyKey },
+    });
+    if (existing) {
+      const existingPreview = existing.preview as {
+        themeOfWeek?: string;
+        estimatedImpact?: { reach?: number; spendAed?: number; projectedOrders?: number };
+      } | null;
+      return {
+        content: JSON.stringify({
+          preview: true,
+          themeOfWeek: existingPreview?.themeOfWeek ?? "",
+          bundleChildCount: existing.childCount,
+          estimatedImpact: existingPreview?.estimatedImpact ?? existing.estimatedImpact ?? {},
+          draftId: existing.id,
+          inboxNotice: "Bundle drafted in the Sous Chef Inbox — Ship all to fire every child at once.",
+        }),
+        draftId: existing.id,
+      };
+    }
+  }
+
   const themeHint = input.theme_hint ? String(input.theme_hint) : null;
   const now = new Date();
   const horizonStart = new Date(now);
@@ -4775,6 +4859,11 @@ async function execPlanMarketingWeek(
           },
         },
         expiresAt,
+        channel: meta?.channel ?? "dashboard_chat",
+        autonomyTier: meta?.autonomyTier ?? 2,
+        // Unique column — only the parent carries it. Children must NOT get
+        // this same key or the second child insert throws a unique violation.
+        idempotencyKey: meta?.idempotencyKey ?? null,
       },
     });
 
@@ -4795,6 +4884,7 @@ async function execPlanMarketingWeek(
           preview: childParams.preview,
           childCount: childParams.childCount ?? 0,
           expiresAt,
+          channel: meta?.channel ?? "dashboard_chat",
         },
       });
     }
@@ -4832,7 +4922,8 @@ async function execPlanMarketingWeek(
 async function execDraftReviewReplies(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
   const force = Boolean(input.force_refresh);
   const limit = Math.min(Math.max(Number(input.limit ?? 8), 1), 15);
@@ -4936,6 +5027,7 @@ async function execDraftReviewReplies(
       items: items.map(({ reviewId, reply }) => ({ reviewId, reply })),
     },
     preview: { items },
+    ...meta,
   });
 
   return {
