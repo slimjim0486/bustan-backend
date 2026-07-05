@@ -75,6 +75,13 @@ export interface AgentInput {
   clerkId: string;
   /** Raw message text from WhatsApp (already stripped of @mentions etc). */
   message: string;
+  /**
+   * Meta's WhatsApp message id for the inbound message that triggered this
+   * turn, when available. Threaded into `executeTool`'s idempotency scope so
+   * a webhook retry of the same inbound message can't double-draft an
+   * action (spec §10.2, Agent-as-Employee Phase 0).
+   */
+  messageId?: string;
 }
 
 export interface AgentReply {
@@ -215,7 +222,8 @@ export async function runAgentTurn(input: AgentInput): Promise<AgentReply> {
         input.restaurantId,
         input.clerkId,
         entitlements,
-        block.input as Record<string, unknown>
+        block.input as Record<string, unknown>,
+        { channel: "owner_whatsapp", idempotencyScope: input.messageId }
       );
       toolResults.push({
         type: "tool_result",

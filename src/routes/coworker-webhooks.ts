@@ -243,6 +243,7 @@ async function handleInboundMessage(input: {
           restaurantId: owner.restaurantId,
           clerkId: owner.owner.clerkId,
           message: action.prompt,
+          messageId,
         });
         await sendCoworkerText({
           coworkerOwnerId: owner.id,
@@ -270,6 +271,7 @@ async function handleInboundMessage(input: {
       restaurantId: owner.restaurantId,
       clerkId: owner.owner.clerkId,
       message: body,
+      messageId,
     });
     await sendCoworkerText({
       coworkerOwnerId: owner.id,
