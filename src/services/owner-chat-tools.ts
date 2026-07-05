@@ -1064,7 +1064,7 @@ export async function executeTool(
 
       // Macro tools — produce bundles
       case "plan_marketing_week":
-        return await execPlanMarketingWeek(restaurantId, clerkId, input);
+        return await execPlanMarketingWeek(restaurantId, clerkId, input, meta);
 
       case "escalate_to_planner":
         return {
@@ -4557,8 +4557,37 @@ async function execGetWidgetStatus(restaurantId: string): Promise<ToolResult> {
 async function execPlanMarketingWeek(
   restaurantId: string,
   clerkId: string,
-  input: Input
+  input: Input,
+  meta: ExecMeta
 ): Promise<ToolResult> {
+  // Idempotency dedup: a webhook retry (or duplicate tool call) carries the
+  // same idempotencyKey as the original request. The bundle write below is
+  // a raw $transaction (not createDraft), so it doesn't get the dedup check
+  // createDraft does for free — re-run this before doing any other work to
+  // avoid re-creating the whole parent+children bundle on retry.
+  if (meta?.idempotencyKey) {
+    const existing = await prisma.draftAction.findUnique({
+      where: { idempotencyKey: meta.idempotencyKey },
+    });
+    if (existing) {
+      const existingPreview = existing.preview as {
+        themeOfWeek?: string;
+        estimatedImpact?: { reach?: number; spendAed?: number; projectedOrders?: number };
+      } | null;
+      return {
+        content: JSON.stringify({
+          preview: true,
+          themeOfWeek: existingPreview?.themeOfWeek ?? "",
+          bundleChildCount: existing.childCount,
+          estimatedImpact: existingPreview?.estimatedImpact ?? existing.estimatedImpact ?? {},
+          draftId: existing.id,
+          inboxNotice: "Bundle drafted in the Sous Chef Inbox — Ship all to fire every child at once.",
+        }),
+        draftId: existing.id,
+      };
+    }
+  }
+
   const themeHint = input.theme_hint ? String(input.theme_hint) : null;
   const now = new Date();
   const horizonStart = new Date(now);
@@ -4830,6 +4859,11 @@ async function execPlanMarketingWeek(
           },
         },
         expiresAt,
+        channel: meta?.channel ?? "dashboard_chat",
+        autonomyTier: meta?.autonomyTier ?? 2,
+        // Unique column — only the parent carries it. Children must NOT get
+        // this same key or the second child insert throws a unique violation.
+        idempotencyKey: meta?.idempotencyKey ?? null,
       },
     });
 
@@ -4850,6 +4884,7 @@ async function execPlanMarketingWeek(
           preview: childParams.preview,
           childCount: childParams.childCount ?? 0,
           expiresAt,
+          channel: meta?.channel ?? "dashboard_chat",
         },
       });
     }
