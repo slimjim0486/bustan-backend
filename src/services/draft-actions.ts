@@ -6,10 +6,13 @@
 // Scheduled section with a 60s grace window before the worker executes it,
 // giving the owner an Undo affordance with no extra infra.
 
+import { randomUUID } from "node:crypto";
 import type { DraftAction, PromotionType } from "@prisma/client";
 import { DraftActionKind, DraftActionStatus, DraftActionSource, Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import type { AutonomyTier } from "@/services/agent/autonomy-tiers";
+import type { AgentChannel } from "@/services/agent/idempotency";
 import { executeCampaignSend } from "@/services/campaign-send";
 import { deleteEmptyPromotions } from "@/routes/menu";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
@@ -96,6 +99,48 @@ export interface CreateDraftParams {
   campaignId?: string | null;
   menuItemId?: string | null;
   expiresAt?: Date;
+  // Agent-as-Employee Phase 0 (spec §3, §10.2): channel/tier snapshot at
+  // proposal time, plus the idempotency + dry-run affordances threaded
+  // through the executor. All optional — existing callers are unaffected.
+  channel?: AgentChannel;
+  autonomyTier?: AutonomyTier;
+  idempotencyKey?: string;
+  dryRun?: boolean;
+}
+
+/**
+ * Pure default-resolution for the three agent-employee fields. Extracted so
+ * it can be unit-tested without a DB, and so createDraft/insertDraftRow share
+ * one source of truth for "what does an unset field mean."
+ */
+export function resolveDraftDefaults(params: {
+  channel?: AgentChannel;
+  autonomyTier?: AutonomyTier;
+  idempotencyKey?: string;
+}): { channel: AgentChannel; autonomyTier: AutonomyTier; idempotencyKey: string | null } {
+  return {
+    channel: params.channel ?? "dashboard_chat",
+    autonomyTier: params.autonomyTier ?? 2,
+    idempotencyKey: params.idempotencyKey ?? null,
+  };
+}
+
+/**
+ * Synthetic result for `createDraft({ dryRun: true })` — no row is written,
+ * no ship job is enqueued (spec §10.2). Deliberately shaped as a subset of
+ * `DraftAction` (same `id` field callers already read) rather than widening
+ * `createDraft`'s return type into something callers must branch on; see
+ * task-4-report.md for the reasoning.
+ */
+export interface DraftDryRunResult {
+  id: string;
+  dryRun: true;
+  channel: AgentChannel;
+  autonomyTier: AutonomyTier;
+  idempotencyKey: string | null;
+  actionType: string;
+  title: string;
+  preview: Prisma.InputJsonValue;
 }
 
 async function insertDraftRow(
@@ -103,6 +148,7 @@ async function insertDraftRow(
   ownerUserId: string,
   params: CreateDraftParams
 ): Promise<DraftAction> {
+  const defaults = resolveDraftDefaults(params);
   return prisma.draftAction.create({
     data: {
       restaurantId,
@@ -123,6 +169,9 @@ async function insertDraftRow(
       campaignId: params.campaignId ?? null,
       menuItemId: params.menuItemId ?? null,
       expiresAt: params.expiresAt ?? new Date(Date.now() + DEFAULT_EXPIRY_MS),
+      channel: defaults.channel,
+      autonomyTier: defaults.autonomyTier,
+      idempotencyKey: defaults.idempotencyKey,
     },
   });
 }
@@ -131,7 +180,33 @@ export async function createDraft(
   restaurantId: string,
   clerkId: string,
   params: CreateDraftParams
-): Promise<DraftAction> {
+): Promise<DraftAction | DraftDryRunResult> {
+  const defaults = resolveDraftDefaults(params);
+
+  if (params.dryRun) {
+    // No persistence, no ship enqueue — spec §10.2. Return a synthetic
+    // preview shaped so callers reading only `.id` keep working.
+    return {
+      id: `dryrun_${defaults.idempotencyKey ?? randomUUID()}`,
+      dryRun: true,
+      channel: defaults.channel,
+      autonomyTier: defaults.autonomyTier,
+      idempotencyKey: defaults.idempotencyKey,
+      actionType: params.actionType,
+      title: params.title,
+      preview: params.preview,
+    };
+  }
+
+  if (defaults.idempotencyKey) {
+    // Retry/duplicate-tool-call collision → return the original row instead
+    // of inserting a second one.
+    const existing = await prisma.draftAction.findUnique({
+      where: { idempotencyKey: defaults.idempotencyKey },
+    });
+    if (existing) return existing;
+  }
+
   const ownerUserId = await resolveUserIdFromClerk(clerkId);
   return insertDraftRow(restaurantId, ownerUserId, params);
 }
