@@ -222,7 +222,10 @@ export async function createSystemDraft(
   ownerUserId: string,
   params: CreateDraftParams
 ): Promise<DraftAction> {
-  return insertDraftRow(restaurantId, ownerUserId, params);
+  return insertDraftRow(restaurantId, ownerUserId, {
+    ...params,
+    channel: params.channel ?? "system_cron",
+  });
 }
 
 /**
@@ -274,6 +277,7 @@ export async function ensureSystemDraftForAdProject(
   const draft = await insertDraftRow(restaurantId, ownerUserId, {
     ...params,
     adProjectId,
+    channel: params.channel ?? "system_cron",
   });
   return { draft, created: true };
 }
