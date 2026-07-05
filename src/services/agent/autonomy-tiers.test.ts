@@ -9,12 +9,12 @@ test("read/analysis tools are tier 0", () => {
 
 test("owner-asked availability toggle is tier 1 (act + notify)", () => {
   assert.equal(getToolTier("toggle_availability"), 1);
-  assert.equal(getToolTier("update_promotion"), 1); // ending/editing a promo is reversible
 });
 
 test("customer-facing sends and price/publish are tier 2 (propose + approve)", () => {
   assert.equal(getToolTier("send_whatsapp_campaign"), 2);
   assert.equal(getToolTier("create_promotion"), 2);
+  assert.equal(getToolTier("update_promotion"), 2); // price edits require approval
   assert.equal(getToolTier("create_ad_campaign"), 2);
   assert.equal(getToolTier("publish_menu"), 2);
 });

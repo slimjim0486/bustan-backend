@@ -51,11 +51,11 @@ export const TOOL_TIERS: Readonly<Record<string, AutonomyTier>> = {
   enhance_descriptions: 1, // drafting is tier 1; publish gate handled in tool
   suggest_dietary_tags: 1,
   toggle_availability: 1,
-  update_promotion: 1, // edit/end an existing promo is reversible
   draft_review_replies: 1, // drafts only; owner still copy-pastes manually
   plan_marketing_week: 1, // stages a bundle for review
 
   // Tier 2 — propose + approve (customer-facing / price / publish / destructive)
+  update_promotion: 2, // price edits are customer-facing; requires approval + grace
   update_menu_item: 2,
   update_menu_items_bulk: 2,
   create_promotion: 2,
