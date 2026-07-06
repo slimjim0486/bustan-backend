@@ -1,4 +1,4 @@
-export type SubscriptionPlan = "starter" | "pro" | "portfolio";
+export type SubscriptionPlan = "starter" | "pro" | "fulltime" | "portfolio";
 export type AnalyticsTier = "basic" | "advanced";
 export type MenuAnalysisLevel = "basic" | "full";
 export type SeoAnalysisDepth = "lite" | "full";
@@ -171,6 +171,54 @@ const PLAN_ENTITLEMENTS: Record<
     competitorIntelManualRefreshesPerWeek: 1,
     agentAutonomy: "draft_only",
     standingInstructionsEnabled: false,
+  },
+  fulltime: {
+    menuItemLimit: null,
+    sourcePhotoImportEnabled: true,
+    sourcePhotoReviewEnabled: true,
+    widgetEnabled: true,
+    menuAssistantEnabled: true,
+    customDomainEnabled: false,
+    shortLinksEnabled: true,
+    hideBranding: true,
+    analyticsTier: "advanced",
+    imageGenerationPriority: 20, // above Pro's 10
+    priorityImageGeneration: true,
+    dishImageGenerationLimit: null, // uncapped
+    imageEnhancementLimit: null,
+    photoEnhancementMonthlyLimit: null,
+    batchImageEnhancementEnabled: true,
+    advancedPhotoStylingEnabled: true,
+    aiDescriptionLimit: null,
+    bulkDescriptionEnabled: true,
+    aiTagAnalysisLimit: null,
+    menuAnalysisLevel: "full",
+    analysisLimit: null,
+    analysisMonthlyLimit: null,
+    seoAnalysisLimit: 4,
+    seoAnalysisDepth: "full",
+    sousChefMonthlyLimit: 2000,
+    ownerChatMonthlyTurnLimit: 200,
+    multiBrandEnable: false,
+    menuCloningEnabled: false,
+    crossBrandAnalyticsEnabled: false,
+    qrCodeGeneratorEnabled: false,
+    timeLimitedSpecialsEnabled: false,
+    soldOutToggleEnabled: false,
+    adStudioEnabled: true,
+    adProjectsPerMonth: null, // uncapped
+    adProjectMonthlyLimit: null,
+    openaiImageMonthlyLimit: null,
+    adGenerationsPerProject: 6,
+    gscDashboardEnabled: true,
+    arabicMenuEnabled: true,
+    sabtPackEnabled: true,
+    sabtPackMaxCostUsdPerWeek: 1.0, // per-WEEK cap retained (cost guardrail)
+    competitorIntelligenceEnabled: true,
+    competitorIntelMaxCompetitors: 5,
+    competitorIntelManualRefreshesPerWeek: 1,
+    agentAutonomy: "guarded_auto",
+    standingInstructionsEnabled: true,
   },
   portfolio: {
     menuItemLimit: null,
