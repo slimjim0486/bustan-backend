@@ -86,3 +86,25 @@ export async function isHighImpactPaused(
   });
   return hasHitBurstLimit(recent, HIGH_IMPACT_HOURLY_LIMIT);
 }
+
+export type AutoExecutionDecision = "auto" | "pause_to_draft" | "passthrough";
+
+/**
+ * Pure: given the account + tool facts, decide what happens to a freshly
+ * created Tier-2 draft. The orchestration wrapper (maybeAutoExecuteDraft)
+ * gathers these facts and acts on the verdict.
+ */
+export function decideAutoExecution(args: {
+  hasDraft: boolean;
+  isDryRun: boolean;
+  tier: number;
+  effective: EffectiveAutonomy;
+  highImpact: boolean;
+  paused: boolean;
+}): AutoExecutionDecision {
+  if (!args.hasDraft || args.isDryRun) return "passthrough";
+  if (args.tier !== 2) return "passthrough";
+  if (args.effective !== "guarded_auto") return "passthrough";
+  if (args.highImpact && args.paused) return "pause_to_draft";
+  return "auto";
+}
