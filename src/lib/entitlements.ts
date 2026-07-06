@@ -64,6 +64,12 @@ export interface PlanEntitlements {
   competitorIntelligenceEnabled: boolean;
   competitorIntelMaxCompetitors: number;
   competitorIntelManualRefreshesPerWeek: number;
+  // Agent autonomy (B1a: defined & returned; enforced in B1b). "draft_only" =
+  // every Tier-2 tool routes through DraftAction approval (today's behavior).
+  // "guarded_auto" = Bustan may auto-execute Tier-2 within guardrails.
+  agentAutonomy: "draft_only" | "guarded_auto";
+  // Whether the account can store standing instructions. B1a defines; B1b builds.
+  standingInstructionsEnabled: boolean;
 }
 
 const PLAN_ENTITLEMENTS: Record<
@@ -115,6 +121,8 @@ const PLAN_ENTITLEMENTS: Record<
     competitorIntelligenceEnabled: false,
     competitorIntelMaxCompetitors: 0,
     competitorIntelManualRefreshesPerWeek: 0,
+    agentAutonomy: "draft_only",
+    standingInstructionsEnabled: false,
   },
   pro: {
     menuItemLimit: null,
@@ -161,6 +169,8 @@ const PLAN_ENTITLEMENTS: Record<
     competitorIntelligenceEnabled: true,
     competitorIntelMaxCompetitors: 5,
     competitorIntelManualRefreshesPerWeek: 1,
+    agentAutonomy: "draft_only",
+    standingInstructionsEnabled: false,
   },
   portfolio: {
     menuItemLimit: null,
@@ -207,6 +217,8 @@ const PLAN_ENTITLEMENTS: Record<
     competitorIntelligenceEnabled: true,
     competitorIntelMaxCompetitors: 10,
     competitorIntelManualRefreshesPerWeek: 4,
+    agentAutonomy: "draft_only",
+    standingInstructionsEnabled: false,
   },
 };
 
@@ -257,6 +269,8 @@ const DRAFT_ENTITLEMENTS: PlanEntitlements = {
   competitorIntelligenceEnabled: false,
   competitorIntelMaxCompetitors: 0,
   competitorIntelManualRefreshesPerWeek: 0,
+  agentAutonomy: "draft_only",
+  standingInstructionsEnabled: false,
 };
 
 type RestaurantPlanSource =
