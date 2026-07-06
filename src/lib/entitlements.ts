@@ -437,7 +437,29 @@ export function getRestaurantEntitlements(source: RestaurantPlanSource): PlanEnt
   }
 
   const plan = getRestaurantPlan(source);
-  return plan ? getPlanEntitlements(plan) : DRAFT_ENTITLEMENTS;
+  const base = plan ? getPlanEntitlements(plan) : DRAFT_ENTITLEMENTS;
+
+  // "First two weeks are on us — full-time": during trial, grant Full-time-level
+  // output (uncapped) regardless of the chosen tier, but keep the stored plan
+  // identity so billing/UI still show what they hired. (Autonomy stays field-
+  // only until B1b — no auto-execution happens yet.)
+  const status = getSubscriptionStatus(source);
+  if (status === "trial") {
+    const ft = getPlanEntitlements("fulltime");
+    return {
+      ...base,
+      dishImageGenerationLimit: ft.dishImageGenerationLimit,
+      imageEnhancementLimit: ft.imageEnhancementLimit,
+      photoEnhancementMonthlyLimit: ft.photoEnhancementMonthlyLimit,
+      adProjectsPerMonth: ft.adProjectsPerMonth,
+      adProjectMonthlyLimit: ft.adProjectMonthlyLimit,
+      openaiImageMonthlyLimit: ft.openaiImageMonthlyLimit,
+      analysisLimit: ft.analysisLimit,
+      analysisMonthlyLimit: ft.analysisMonthlyLimit,
+    };
+  }
+
+  return base;
 }
 
 export function withRestaurantEntitlements<T extends RestaurantPlanSource>(
