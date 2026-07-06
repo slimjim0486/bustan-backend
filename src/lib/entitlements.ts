@@ -439,12 +439,15 @@ export function getRestaurantEntitlements(source: RestaurantPlanSource): PlanEnt
   const plan = getRestaurantPlan(source);
   const base = plan ? getPlanEntitlements(plan) : DRAFT_ENTITLEMENTS;
 
-  // "First two weeks are on us — full-time": during trial, grant Full-time-level
-  // output (uncapped) regardless of the chosen tier, but keep the stored plan
-  // identity so billing/UI still show what they hired. (Autonomy stays field-
-  // only until B1b — no auto-execution happens yet.)
+  // "First two weeks are on us — full-time": only a SELECTED paid tier's 14-day
+  // trial grants Full-time-level output (uncapped) regardless of the chosen tier,
+  // while keeping the stored plan identity so billing/UI still show what they
+  // hired. A plan-less Draft carries `subscriptionStatus: "trial"` by default (the
+  // free Trial-shift funnel stage) and MUST stay on DRAFT_ENTITLEMENTS (capped) —
+  // hence the `&& plan` guard. (Autonomy stays field-only until B1b — no
+  // auto-execution happens yet.)
   const status = getSubscriptionStatus(source);
-  if (status === "trial") {
+  if (status === "trial" && plan) {
     const ft = getPlanEntitlements("fulltime");
     return {
       ...base,

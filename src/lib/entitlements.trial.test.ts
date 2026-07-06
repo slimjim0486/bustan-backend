@@ -21,3 +21,11 @@ test("an active (non-trial) pro sub keeps Pro caps", async () => {
   assert.equal(ent.dishImageGenerationLimit, 300);
   assert.equal(ent.adProjectsPerMonth, 20);
 });
+
+test("a plan-less draft with trial status stays capped (free Trial-shift, not the paid trial)", async () => {
+  const { getRestaurantEntitlements } = await import("./entitlements.js");
+  const ent = getRestaurantEntitlements({ subscriptionStatus: "trial" }); // no subscription/plan
+  assert.equal(ent.plan, null);
+  assert.equal(ent.dishImageGenerationLimit, 10); // DRAFT_ENTITLEMENTS value, NOT null
+  assert.equal(ent.adProjectsPerMonth, 0);
+});
