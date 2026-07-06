@@ -18,12 +18,18 @@ export function getStripe() {
   return stripe;
 }
 
+export function resolveCheckoutPriceId(plan: "starter" | "pro" | "fulltime"): string | undefined {
+  if (plan === "starter") return env.STRIPE_STARTER_PRICE_ID;
+  if (plan === "fulltime") return env.STRIPE_FULLTIME_PRICE_ID;
+  return env.STRIPE_PRO_PRICE_ID_V2 ?? env.STRIPE_PRO_PRICE_ID;
+}
+
 export async function createCheckoutSession(input: {
   customerEmail?: string | null;
   stripeCustomerId?: string | null;
   restaurantId: string;
   restaurantName: string;
-  plan: "starter" | "pro";
+  plan: "starter" | "pro" | "fulltime";
   successUrl: string;
   cancelUrl: string;
 }) {
@@ -32,10 +38,7 @@ export async function createCheckoutSession(input: {
     throw new ApiError("Stripe is not configured", 503);
   }
 
-  const priceId =
-    input.plan === "starter"
-      ? env.STRIPE_STARTER_PRICE_ID
-      : env.STRIPE_PRO_PRICE_ID_V2 ?? env.STRIPE_PRO_PRICE_ID;
+  const priceId = resolveCheckoutPriceId(input.plan);
 
   if (!priceId) {
     throw new ApiError("Missing Stripe price configuration", 503);
@@ -97,7 +100,10 @@ export async function createPortfolioCheckoutSession(input: {
     throw new ApiError("Stripe is not configured", 503);
   }
 
-  const basePriceId = env.STRIPE_PORTFOLIO_PRICE_ID_V2 ?? env.STRIPE_PORTFOLIO_PRICE_ID;
+  const basePriceId =
+    env.STRIPE_PORTFOLIO_PRICE_ID_V3 ??
+    env.STRIPE_PORTFOLIO_PRICE_ID_V2 ??
+    env.STRIPE_PORTFOLIO_PRICE_ID;
   if (!basePriceId) {
     throw new ApiError("Missing Stripe portfolio price configuration", 503);
   }
@@ -188,6 +194,7 @@ export async function updatePortfolioSubscriptionQuantity(input: {
 
   const subscription = await client.subscriptions.retrieve(input.stripeSubscriptionId);
   const basePriceIds = [
+    env.STRIPE_PORTFOLIO_PRICE_ID_V3,
     env.STRIPE_PORTFOLIO_PRICE_ID_V2,
     env.STRIPE_PORTFOLIO_PRICE_ID,
   ].filter(Boolean);

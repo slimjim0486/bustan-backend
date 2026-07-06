@@ -14,7 +14,7 @@ import {
 
 const createSchema = z.object({
   restaurantId: z.string().cuid(),
-  plan: z.enum(["pro"]),
+  plan: z.enum(["pro", "fulltime"]),
   successUrl: z.string().url(),
   cancelUrl: z.string().url(),
 });

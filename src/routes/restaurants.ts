@@ -552,7 +552,9 @@ export const restaurantsRoute = new Hono<{
       const data = updateRestaurantSchema.parse(await c.req.json());
       const entitlements = getRestaurantEntitlements(current);
       const hasPremiumThemeAccess =
-        entitlements.plan === "pro" || entitlements.plan === "portfolio";
+        entitlements.plan === "pro" ||
+        entitlements.plan === "fulltime" ||
+        entitlements.plan === "portfolio";
 
       if (data.themeKey && premiumThemeKeys.has(data.themeKey) && !hasPremiumThemeAccess) {
         throw new ApiError("Premium themes require a Pro or Portfolio plan", 403);

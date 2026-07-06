@@ -125,7 +125,7 @@ async function fanOutCompetitorIntelJobs() {
         {
           subscription: {
             is: {
-              plan: { in: ["pro", "portfolio"] },
+              plan: { in: ["pro", "fulltime", "portfolio"] },
               status: { in: ["active", "trial"] },
             },
           },
