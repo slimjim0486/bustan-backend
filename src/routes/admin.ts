@@ -20,7 +20,7 @@ import {
 const ticketStatusValues = ["open", "in_progress", "waiting_on_customer", "resolved", "closed"] as const;
 const ticketPriorityValues = ["urgent", "high", "normal", "low"] as const;
 const ticketSeverityValues = ["sev1", "sev2", "sev3", "sev4"] as const;
-const planValues = ["starter", "pro", "portfolio"] as const;
+const planValues = ["starter", "pro", "fulltime", "portfolio"] as const;
 const MINUTE = 60_000;
 
 const ticketStatusSchema = z.object({

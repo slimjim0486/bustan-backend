@@ -21,6 +21,7 @@ const SEVERITY_BASE: Record<SupportTicketSeverity, number> = {
 
 const PLAN_BOOST: Record<SubscriptionPlan, number> = {
   portfolio: 30,
+  fulltime: 25,
   pro: 20,
   starter: 10,
 };

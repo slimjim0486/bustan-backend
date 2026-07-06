@@ -1,4 +1,4 @@
-export type SubscriptionPlan = "starter" | "pro" | "portfolio";
+export type SubscriptionPlan = "starter" | "pro" | "fulltime" | "portfolio";
 export type AnalyticsTier = "basic" | "advanced";
 export type MenuAnalysisLevel = "basic" | "full";
 export type SeoAnalysisDepth = "lite" | "full";
@@ -64,6 +64,12 @@ export interface PlanEntitlements {
   competitorIntelligenceEnabled: boolean;
   competitorIntelMaxCompetitors: number;
   competitorIntelManualRefreshesPerWeek: number;
+  // Agent autonomy (B1a: defined & returned; enforced in B1b). "draft_only" =
+  // every Tier-2 tool routes through DraftAction approval (today's behavior).
+  // "guarded_auto" = Bustan may auto-execute Tier-2 within guardrails.
+  agentAutonomy: "draft_only" | "guarded_auto";
+  // Whether the account can store standing instructions. B1a defines; B1b builds.
+  standingInstructionsEnabled: boolean;
 }
 
 const PLAN_ENTITLEMENTS: Record<
@@ -115,6 +121,8 @@ const PLAN_ENTITLEMENTS: Record<
     competitorIntelligenceEnabled: false,
     competitorIntelMaxCompetitors: 0,
     competitorIntelManualRefreshesPerWeek: 0,
+    agentAutonomy: "draft_only",
+    standingInstructionsEnabled: false,
   },
   pro: {
     menuItemLimit: null,
@@ -161,6 +169,60 @@ const PLAN_ENTITLEMENTS: Record<
     competitorIntelligenceEnabled: true,
     competitorIntelMaxCompetitors: 5,
     competitorIntelManualRefreshesPerWeek: 1,
+    agentAutonomy: "draft_only",
+    standingInstructionsEnabled: false,
+  },
+  fulltime: {
+    menuItemLimit: null,
+    sourcePhotoImportEnabled: true,
+    sourcePhotoReviewEnabled: true,
+    widgetEnabled: true,
+    menuAssistantEnabled: true,
+    customDomainEnabled: false,
+    shortLinksEnabled: true,
+    hideBranding: true,
+    analyticsTier: "advanced",
+    imageGenerationPriority: 20, // above Pro's 10
+    priorityImageGeneration: true,
+    // "Uncapped" = generous fair-use ceilings, not literally unbounded. These
+    // bound the only per-unit COGS surface (gpt-image-2 ~$0.19/image) at
+    // abuse-tier volume; a real restaurant never approaches them. Cheap LLM
+    // text analyses stay null (truly uncapped). Per COO margins guardrail.
+    dishImageGenerationLimit: 1000,
+    imageEnhancementLimit: 300,
+    photoEnhancementMonthlyLimit: 300,
+    batchImageEnhancementEnabled: true,
+    advancedPhotoStylingEnabled: true,
+    aiDescriptionLimit: null,
+    bulkDescriptionEnabled: true,
+    aiTagAnalysisLimit: null,
+    menuAnalysisLevel: "full",
+    analysisLimit: null,
+    analysisMonthlyLimit: null,
+    seoAnalysisLimit: 4, // top-tier SEO depth (Full-time ≥ Part-time; portfolio inherits this next task)
+    seoAnalysisDepth: "full",
+    sousChefMonthlyLimit: 2000,
+    ownerChatMonthlyTurnLimit: 200,
+    multiBrandEnable: false,
+    menuCloningEnabled: false,
+    crossBrandAnalyticsEnabled: false,
+    qrCodeGeneratorEnabled: false,
+    timeLimitedSpecialsEnabled: false,
+    soldOutToggleEnabled: false,
+    adStudioEnabled: true,
+    adProjectsPerMonth: 40, // fair-use ceiling; ad projects are the highest-cost lever (6 imgs each)
+    adProjectMonthlyLimit: 40,
+    openaiImageMonthlyLimit: 300,
+    adGenerationsPerProject: 6,
+    gscDashboardEnabled: true,
+    arabicMenuEnabled: true,
+    sabtPackEnabled: true,
+    sabtPackMaxCostUsdPerWeek: 1.0, // per-WEEK cap retained (cost guardrail)
+    competitorIntelligenceEnabled: true,
+    competitorIntelMaxCompetitors: 5,
+    competitorIntelManualRefreshesPerWeek: 1,
+    agentAutonomy: "guarded_auto",
+    standingInstructionsEnabled: true,
   },
   portfolio: {
     menuItemLimit: null,
@@ -172,19 +234,20 @@ const PLAN_ENTITLEMENTS: Record<
     shortLinksEnabled: true,
     hideBranding: true,
     analyticsTier: "advanced",
-    imageGenerationPriority: 10,
+    imageGenerationPriority: 20,
     priorityImageGeneration: true,
-    dishImageGenerationLimit: 300,
-    imageEnhancementLimit: 50,
-    photoEnhancementMonthlyLimit: 50,
+    // Fair-use ceilings apply PER BRAND (same as Full-time) — see the fulltime row.
+    dishImageGenerationLimit: 1000,
+    imageEnhancementLimit: 300,
+    photoEnhancementMonthlyLimit: 300,
     batchImageEnhancementEnabled: true,
     advancedPhotoStylingEnabled: true,
     aiDescriptionLimit: null,
     bulkDescriptionEnabled: true,
     aiTagAnalysisLimit: null,
     menuAnalysisLevel: "full",
-    analysisLimit: 4,
-    analysisMonthlyLimit: 4,
+    analysisLimit: null,
+    analysisMonthlyLimit: null,
     seoAnalysisLimit: 4,
     seoAnalysisDepth: "full",
     sousChefMonthlyLimit: 2000,
@@ -196,17 +259,19 @@ const PLAN_ENTITLEMENTS: Record<
     timeLimitedSpecialsEnabled: true,
     soldOutToggleEnabled: true,
     adStudioEnabled: true,
-    adProjectsPerMonth: 20,
-    adProjectMonthlyLimit: 20,
-    openaiImageMonthlyLimit: 50,
+    adProjectsPerMonth: 40,
+    adProjectMonthlyLimit: 40,
+    openaiImageMonthlyLimit: 300,
     adGenerationsPerProject: 6,
     gscDashboardEnabled: true,
     arabicMenuEnabled: true,
     sabtPackEnabled: true,
-    sabtPackMaxCostUsdPerWeek: 1.0,
+    sabtPackMaxCostUsdPerWeek: 1.0, // cost guardrail retained as-is
     competitorIntelligenceEnabled: true,
     competitorIntelMaxCompetitors: 10,
     competitorIntelManualRefreshesPerWeek: 4,
+    agentAutonomy: "guarded_auto",
+    standingInstructionsEnabled: true,
   },
 };
 
@@ -257,6 +322,8 @@ const DRAFT_ENTITLEMENTS: PlanEntitlements = {
   competitorIntelligenceEnabled: false,
   competitorIntelMaxCompetitors: 0,
   competitorIntelManualRefreshesPerWeek: 0,
+  agentAutonomy: "draft_only",
+  standingInstructionsEnabled: false,
 };
 
 type RestaurantPlanSource =
@@ -312,7 +379,7 @@ export function getPortfolioActivationState(
 
 function getPendingPortfolioEntitlements(): PlanEntitlements {
   return {
-    ...getPlanEntitlements("pro"),
+    ...getPlanEntitlements("fulltime"),
     plan: "portfolio",
     multiBrandEnable: false,
     menuCloningEnabled: false,
@@ -320,7 +387,6 @@ function getPendingPortfolioEntitlements(): PlanEntitlements {
     qrCodeGeneratorEnabled: false,
     timeLimitedSpecialsEnabled: false,
     soldOutToggleEnabled: false,
-    // Inherit ad studio from Pro
   };
 }
 
@@ -376,7 +442,32 @@ export function getRestaurantEntitlements(source: RestaurantPlanSource): PlanEnt
   }
 
   const plan = getRestaurantPlan(source);
-  return plan ? getPlanEntitlements(plan) : DRAFT_ENTITLEMENTS;
+  const base = plan ? getPlanEntitlements(plan) : DRAFT_ENTITLEMENTS;
+
+  // "First two weeks are on us — full-time": only a SELECTED paid tier's 14-day
+  // trial grants Full-time-level output (uncapped) regardless of the chosen tier,
+  // while keeping the stored plan identity so billing/UI still show what they
+  // hired. A plan-less Draft carries `subscriptionStatus: "trial"` by default (the
+  // free Trial-shift funnel stage) and MUST stay on DRAFT_ENTITLEMENTS (capped) —
+  // hence the `&& plan` guard. (Autonomy stays field-only until B1b — no
+  // auto-execution happens yet.)
+  const status = getSubscriptionStatus(source);
+  if (status === "trial" && plan) {
+    const ft = getPlanEntitlements("fulltime");
+    return {
+      ...base,
+      dishImageGenerationLimit: ft.dishImageGenerationLimit,
+      imageEnhancementLimit: ft.imageEnhancementLimit,
+      photoEnhancementMonthlyLimit: ft.photoEnhancementMonthlyLimit,
+      adProjectsPerMonth: ft.adProjectsPerMonth,
+      adProjectMonthlyLimit: ft.adProjectMonthlyLimit,
+      openaiImageMonthlyLimit: ft.openaiImageMonthlyLimit,
+      analysisLimit: ft.analysisLimit,
+      analysisMonthlyLimit: ft.analysisMonthlyLimit,
+    };
+  }
+
+  return base;
 }
 
 export function withRestaurantEntitlements<T extends RestaurantPlanSource>(
