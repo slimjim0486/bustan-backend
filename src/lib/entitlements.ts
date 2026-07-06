@@ -195,7 +195,7 @@ const PLAN_ENTITLEMENTS: Record<
     menuAnalysisLevel: "full",
     analysisLimit: null,
     analysisMonthlyLimit: null,
-    seoAnalysisLimit: 4,
+    seoAnalysisLimit: 4, // top-tier SEO depth (Full-time ≥ Part-time; portfolio inherits this next task)
     seoAnalysisDepth: "full",
     sousChefMonthlyLimit: 2000,
     ownerChatMonthlyTurnLimit: 200,

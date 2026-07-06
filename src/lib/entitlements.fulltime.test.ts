@@ -17,6 +17,16 @@ test("fulltime is Pro-level plus autonomy and uncapped output", async () => {
   assert.equal(ft.adProjectsPerMonth, null);
   assert.equal(ft.adProjectMonthlyLimit, null);
   assert.equal(ft.openaiImageMonthlyLimit, null);
+  assert.equal(ft.analysisLimit, null);
+  assert.equal(ft.analysisMonthlyLimit, null);
+
+  // Cost guardrail RETAINED (per-week USD/competitor caps must stay non-null)
+  assert.equal(ft.sabtPackMaxCostUsdPerWeek, 1.0);
+  assert.equal(ft.competitorIntelMaxCompetitors, 5);
+  assert.equal(ft.competitorIntelManualRefreshesPerWeek, 1);
+
+  // Top-tier SEO depth retained (portfolio inherits this next task — must not regress to 2)
+  assert.equal(ft.seoAnalysisLimit, 4);
 
   // Priority above Pro
   assert.ok(ft.imageGenerationPriority > pro.imageGenerationPriority);
