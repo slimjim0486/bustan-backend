@@ -37,7 +37,7 @@ const portfolioPortalSchema = z.object({
   returnUrl: z.string().url(),
 });
 
-const webhookSchema = z.object({
+export const webhookSchema = z.object({
   type: z.enum([
     "checkout.session.completed",
     "customer.subscription.created",
@@ -51,7 +51,7 @@ const webhookSchema = z.object({
     legacyRestaurantId: z.string().cuid().optional(),
     stripeCustomerId: z.string().optional(),
     stripeSubscriptionId: z.string().optional(),
-    plan: z.enum(["starter", "pro", "portfolio"]).optional(),
+    plan: z.enum(["starter", "pro", "fulltime", "portfolio"]).optional(),
     status: z.enum(["trial", "active", "paused", "cancelled"]).optional(),
     currentPeriodEnd: z.string().datetime().nullable().optional(),
     quantity: z.number().int().positive().optional(),
