@@ -7,8 +7,9 @@ test("portfolio inherits Full-time autonomy + uncapped, keeps multi-brand", asyn
 
   assert.equal(p.agentAutonomy, "guarded_auto");
   assert.equal(p.standingInstructionsEnabled, true);
-  assert.equal(p.dishImageGenerationLimit, null);
-  assert.equal(p.adProjectsPerMonth, null);
+  // Full-time-level fair-use ceilings, applied per brand
+  assert.equal(p.dishImageGenerationLimit, 1000);
+  assert.equal(p.adProjectsPerMonth, 40);
 
   // Multi-brand still on (this is what makes it Head-of-group)
   assert.equal(p.multiBrandEnable, true);

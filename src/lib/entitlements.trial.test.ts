@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-test("a Part-time (pro) sub in trial gets uncapped Full-time-level output", async () => {
+test("a Part-time (pro) sub in trial gets Full-time-level output (fair-use ceilings)", async () => {
   const { getRestaurantEntitlements } = await import("./entitlements.js");
   const ent = getRestaurantEntitlements({
     subscription: { plan: "pro", status: "trial" },
   });
-  // Uncapped during trial
-  assert.equal(ent.dishImageGenerationLimit, null);
-  assert.equal(ent.adProjectsPerMonth, null);
+  // Widened to Full-time-level during trial (generous fair-use ceilings, well above Pro's 300/20)
+  assert.equal(ent.dishImageGenerationLimit, 1000);
+  assert.equal(ent.adProjectsPerMonth, 40);
   // But the stored plan identity is preserved (billing/UI truth)
   assert.equal(ent.plan, "pro");
 });

@@ -10,13 +10,15 @@ test("fulltime is Pro-level plus autonomy and uncapped output", async () => {
   assert.equal(ft.agentAutonomy, "guarded_auto");
   assert.equal(ft.standingInstructionsEnabled, true);
 
-  // Output caps lifted vs Pro
-  assert.equal(ft.dishImageGenerationLimit, null);
-  assert.equal(ft.imageEnhancementLimit, null);
-  assert.equal(ft.photoEnhancementMonthlyLimit, null);
-  assert.equal(ft.adProjectsPerMonth, null);
-  assert.equal(ft.adProjectMonthlyLimit, null);
-  assert.equal(ft.openaiImageMonthlyLimit, null);
+  // Output raised well above Pro, but bounded by generous FAIR-USE ceilings on
+  // the per-unit image/ad COGS surface (COO margins guardrail — not unbounded).
+  assert.equal(ft.dishImageGenerationLimit, 1000); // vs Pro 300
+  assert.equal(ft.imageEnhancementLimit, 300); // vs Pro 50
+  assert.equal(ft.photoEnhancementMonthlyLimit, 300);
+  assert.equal(ft.adProjectsPerMonth, 40); // vs Pro 20; highest-cost lever
+  assert.equal(ft.adProjectMonthlyLimit, 40);
+  assert.equal(ft.openaiImageMonthlyLimit, 300); // vs Pro 50
+  // Cheap LLM text analyses stay truly uncapped
   assert.equal(ft.analysisLimit, null);
   assert.equal(ft.analysisMonthlyLimit, null);
 

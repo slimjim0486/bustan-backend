@@ -184,9 +184,13 @@ const PLAN_ENTITLEMENTS: Record<
     analyticsTier: "advanced",
     imageGenerationPriority: 20, // above Pro's 10
     priorityImageGeneration: true,
-    dishImageGenerationLimit: null, // uncapped
-    imageEnhancementLimit: null,
-    photoEnhancementMonthlyLimit: null,
+    // "Uncapped" = generous fair-use ceilings, not literally unbounded. These
+    // bound the only per-unit COGS surface (gpt-image-2 ~$0.19/image) at
+    // abuse-tier volume; a real restaurant never approaches them. Cheap LLM
+    // text analyses stay null (truly uncapped). Per COO margins guardrail.
+    dishImageGenerationLimit: 1000,
+    imageEnhancementLimit: 300,
+    photoEnhancementMonthlyLimit: 300,
     batchImageEnhancementEnabled: true,
     advancedPhotoStylingEnabled: true,
     aiDescriptionLimit: null,
@@ -206,9 +210,9 @@ const PLAN_ENTITLEMENTS: Record<
     timeLimitedSpecialsEnabled: false,
     soldOutToggleEnabled: false,
     adStudioEnabled: true,
-    adProjectsPerMonth: null, // uncapped
-    adProjectMonthlyLimit: null,
-    openaiImageMonthlyLimit: null,
+    adProjectsPerMonth: 40, // fair-use ceiling; ad projects are the highest-cost lever (6 imgs each)
+    adProjectMonthlyLimit: 40,
+    openaiImageMonthlyLimit: 300,
     adGenerationsPerProject: 6,
     gscDashboardEnabled: true,
     arabicMenuEnabled: true,
@@ -232,9 +236,10 @@ const PLAN_ENTITLEMENTS: Record<
     analyticsTier: "advanced",
     imageGenerationPriority: 20,
     priorityImageGeneration: true,
-    dishImageGenerationLimit: null, // uncapped
-    imageEnhancementLimit: null,
-    photoEnhancementMonthlyLimit: null,
+    // Fair-use ceilings apply PER BRAND (same as Full-time) — see the fulltime row.
+    dishImageGenerationLimit: 1000,
+    imageEnhancementLimit: 300,
+    photoEnhancementMonthlyLimit: 300,
     batchImageEnhancementEnabled: true,
     advancedPhotoStylingEnabled: true,
     aiDescriptionLimit: null,
@@ -254,9 +259,9 @@ const PLAN_ENTITLEMENTS: Record<
     timeLimitedSpecialsEnabled: true,
     soldOutToggleEnabled: true,
     adStudioEnabled: true,
-    adProjectsPerMonth: null, // uncapped
-    adProjectMonthlyLimit: null,
-    openaiImageMonthlyLimit: null,
+    adProjectsPerMonth: 40,
+    adProjectMonthlyLimit: 40,
+    openaiImageMonthlyLimit: 300,
     adGenerationsPerProject: 6,
     gscDashboardEnabled: true,
     arabicMenuEnabled: true,
