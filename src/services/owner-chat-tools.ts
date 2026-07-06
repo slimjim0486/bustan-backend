@@ -14,6 +14,7 @@ import { createDraft, type CreateDraftParams } from "@/services/draft-actions";
 import { resolveCampaignAudience } from "@/services/campaign-send";
 import { assertToolAllowed, getToolTier, type AutonomyTier } from "@/services/agent/autonomy-tiers";
 import { deriveIdempotencyKey, type AgentChannel } from "@/services/agent/idempotency";
+import { maybeAutoExecuteDraft } from "@/services/agent/auto-execute";
 import { DraftActionKind, DraftActionSource } from "@prisma/client";
 import { pullGoogleReviews, listUnansweredReviews } from "@/services/reviews/pull-reviews";
 import { draftReplies } from "@/services/reviews/reply-drafter";
@@ -910,7 +911,7 @@ async function resolveTargetRestaurantId(
   return target.id;
 }
 
-export async function executeTool(
+async function executeToolInner(
   toolName: string,
   restaurantId: string,
   clerkId: string,
@@ -1081,6 +1082,32 @@ export async function executeTool(
     const message = error instanceof Error ? error.message : "Tool execution failed";
     return { content: JSON.stringify({ error: message }) };
   }
+}
+
+export async function executeTool(
+  toolName: string,
+  restaurantId: string,
+  clerkId: string,
+  entitlements: PlanEntitlements,
+  input: Input,
+  options: { channel?: AgentChannel; idempotencyScope?: string } = {}
+): Promise<ToolResult> {
+  const result = await executeToolInner(toolName, restaurantId, clerkId, entitlements, input, options);
+  // B1b: auto-execute Tier-2 drafts for guarded_auto accounts. Cheap guard
+  // first — only a tier-2 tool that actually staged a draft can auto-execute.
+  if (getToolTier(toolName) !== 2 || !result.draftId) return result;
+  const r = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { agentAutonomyOptIn: true },
+  });
+  return maybeAutoExecuteDraft({
+    result,
+    toolName,
+    restaurantId,
+    clerkId,
+    entitlements,
+    restaurant: { agentAutonomyOptIn: r?.agentAutonomyOptIn ?? false },
+  });
 }
 
 // ── READ Tool Implementations ──────────────────────────────────

@@ -59,6 +59,7 @@ import { coworkerRoute } from "@/routes/coworker";
 import { coworkerAdminRoute } from "@/routes/coworker-admin";
 import { coworkerWebhooksRoute } from "@/routes/coworker-webhooks";
 import { inboxRoute } from "@/routes/inbox";
+import { autonomyRoute } from "@/routes/autonomy";
 
 initSentry();
 
@@ -114,6 +115,7 @@ app.route("/api/coworker", coworkerRoute);
 app.route("/api/admin/coworker", coworkerAdminRoute);
 app.route("/api/webhooks", coworkerWebhooksRoute);
 app.route("/api/inbox", inboxRoute);
+app.route("/api/autonomy", autonomyRoute);
 
 serve(
   {

@@ -20,6 +20,7 @@ import { env } from "@/lib/env";
 import { ApiError } from "@/lib/errors";
 import { buildOwnerSystemPrompt } from "@/lib/owner-chat-prompts";
 import { prisma } from "@/lib/prisma";
+import { getStandingInstructions, STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
 import { createSousChefMessage } from "@/services/anthropic-models";
 import { OWNER_TOOLS, executeTool } from "@/services/owner-chat-tools";
 
@@ -121,15 +122,20 @@ export async function runAgentTurn(input: AgentInput): Promise<AgentReply> {
 
   const totalItems = await prisma.menuItem.count({ where: { restaurantId: input.restaurantId } });
 
-  const memoryRows = await prisma.ownerChatMemory.findMany({
-    where: {
-      restaurantId: input.restaurantId,
-      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-    },
-    orderBy: [{ lastReinforced: "desc" }, { confidence: "desc" }],
-    take: 20,
-    select: { type: true, content: true },
-  });
+  const [regularMemories, standingInstructions] = await Promise.all([
+    prisma.ownerChatMemory.findMany({
+      where: {
+        restaurantId: input.restaurantId,
+        type: { not: STANDING_INSTRUCTION_TYPE },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      orderBy: [{ lastReinforced: "desc" }, { confidence: "desc" }],
+      take: 20,
+      select: { type: true, content: true },
+    }),
+    getStandingInstructions(input.restaurantId),
+  ]);
+  const memoryRows = [...standingInstructions, ...regularMemories];
 
   // Usage summaries for the system prompt. We pass zeros for any value we
   // don't readily have — keeps the prompt builder happy without an extra
