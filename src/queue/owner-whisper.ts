@@ -13,6 +13,7 @@ import {
   type WhisperSnapshot,
 } from "@/lib/owner-chat-prompts";
 import { prisma } from "@/lib/prisma";
+import { STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
 import { getBoss } from "@/queue/image-generation";
 import { createSousChefMessage } from "@/services/anthropic-models";
 
@@ -385,6 +386,7 @@ async function processGenerateJob(job: GenerateWorkerJob) {
       prisma.ownerChatMemory.findMany({
         where: {
           restaurantId,
+          type: { not: STANDING_INSTRUCTION_TYPE },
           OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
         },
         orderBy: [{ lastReinforced: "desc" }, { confidence: "desc" }],

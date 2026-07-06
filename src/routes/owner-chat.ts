@@ -7,6 +7,7 @@ import { env } from "@/lib/env";
 import { ApiError } from "@/lib/errors";
 import { errorResponse } from "@/lib/http";
 import { buildOwnerSystemPrompt } from "@/lib/owner-chat-prompts";
+import { getStandingInstructions, STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
 import { prisma } from "@/lib/prisma";
 import { assertRateLimit } from "@/lib/public-request-guards";
 import { requireAuth } from "@/middleware/auth";
@@ -498,16 +499,22 @@ export const ownerChatRoute = new Hono<{
         getAiUsageSummary(restaurantId, "image_enhancement"),
       ]);
 
-      // Load long-term memories for personalization
-      const memoryRows = await prisma.ownerChatMemory.findMany({
-        where: {
-          restaurantId,
-          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-        },
-        orderBy: [{ lastReinforced: "desc" }, { confidence: "desc" }],
-        take: 20,
-        select: { type: true, content: true },
-      });
+      // Load long-term memories for personalization (standing instructions are
+      // fetched separately so the take-limit can't crowd a directive out).
+      const [regularMemories, standingInstructions] = await Promise.all([
+        prisma.ownerChatMemory.findMany({
+          where: {
+            restaurantId,
+            type: { not: STANDING_INSTRUCTION_TYPE },
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          },
+          orderBy: [{ lastReinforced: "desc" }, { confidence: "desc" }],
+          take: 20,
+          select: { type: true, content: true },
+        }),
+        getStandingInstructions(restaurantId),
+      ]);
+      const memoryRows = [...standingInstructions, ...regularMemories];
 
       const systemPrompt = buildOwnerSystemPrompt(
         {

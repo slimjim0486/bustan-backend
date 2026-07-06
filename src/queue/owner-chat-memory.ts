@@ -13,6 +13,7 @@ import {
   type MemoryItem,
 } from "@/lib/owner-chat-prompts";
 import { prisma } from "@/lib/prisma";
+import { STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
 import { getBoss } from "@/queue/image-generation";
 import { createSousChefMessage } from "@/services/anthropic-models";
 
@@ -220,7 +221,7 @@ async function processExtractJob(job: ExtractWorkerJob) {
       select: { name: true },
     }),
     prisma.ownerChatMemory.findMany({
-      where: { restaurantId, type: { not: "standing_instruction" } },
+      where: { restaurantId, type: { not: STANDING_INSTRUCTION_TYPE } },
       orderBy: { lastReinforced: "desc" },
       take: 30,
       select: { id: true, type: true, content: true },
