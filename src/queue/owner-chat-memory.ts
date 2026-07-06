@@ -220,7 +220,7 @@ async function processExtractJob(job: ExtractWorkerJob) {
       select: { name: true },
     }),
     prisma.ownerChatMemory.findMany({
-      where: { restaurantId },
+      where: { restaurantId, type: { not: "standing_instruction" } },
       orderBy: { lastReinforced: "desc" },
       take: 30,
       select: { id: true, type: true, content: true },
