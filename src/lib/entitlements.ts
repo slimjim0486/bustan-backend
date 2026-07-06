@@ -230,19 +230,19 @@ const PLAN_ENTITLEMENTS: Record<
     shortLinksEnabled: true,
     hideBranding: true,
     analyticsTier: "advanced",
-    imageGenerationPriority: 10,
+    imageGenerationPriority: 20,
     priorityImageGeneration: true,
-    dishImageGenerationLimit: 300,
-    imageEnhancementLimit: 50,
-    photoEnhancementMonthlyLimit: 50,
+    dishImageGenerationLimit: null, // uncapped
+    imageEnhancementLimit: null,
+    photoEnhancementMonthlyLimit: null,
     batchImageEnhancementEnabled: true,
     advancedPhotoStylingEnabled: true,
     aiDescriptionLimit: null,
     bulkDescriptionEnabled: true,
     aiTagAnalysisLimit: null,
     menuAnalysisLevel: "full",
-    analysisLimit: 4,
-    analysisMonthlyLimit: 4,
+    analysisLimit: null,
+    analysisMonthlyLimit: null,
     seoAnalysisLimit: 4,
     seoAnalysisDepth: "full",
     sousChefMonthlyLimit: 2000,
@@ -254,19 +254,19 @@ const PLAN_ENTITLEMENTS: Record<
     timeLimitedSpecialsEnabled: true,
     soldOutToggleEnabled: true,
     adStudioEnabled: true,
-    adProjectsPerMonth: 20,
-    adProjectMonthlyLimit: 20,
-    openaiImageMonthlyLimit: 50,
+    adProjectsPerMonth: null, // uncapped
+    adProjectMonthlyLimit: null,
+    openaiImageMonthlyLimit: null,
     adGenerationsPerProject: 6,
     gscDashboardEnabled: true,
     arabicMenuEnabled: true,
     sabtPackEnabled: true,
-    sabtPackMaxCostUsdPerWeek: 1.0,
+    sabtPackMaxCostUsdPerWeek: 1.0, // cost guardrail retained as-is
     competitorIntelligenceEnabled: true,
     competitorIntelMaxCompetitors: 10,
     competitorIntelManualRefreshesPerWeek: 4,
-    agentAutonomy: "draft_only",
-    standingInstructionsEnabled: false,
+    agentAutonomy: "guarded_auto",
+    standingInstructionsEnabled: true,
   },
 };
 
@@ -374,7 +374,7 @@ export function getPortfolioActivationState(
 
 function getPendingPortfolioEntitlements(): PlanEntitlements {
   return {
-    ...getPlanEntitlements("pro"),
+    ...getPlanEntitlements("fulltime"),
     plan: "portfolio",
     multiBrandEnable: false,
     menuCloningEnabled: false,
@@ -382,7 +382,6 @@ function getPendingPortfolioEntitlements(): PlanEntitlements {
     qrCodeGeneratorEnabled: false,
     timeLimitedSpecialsEnabled: false,
     soldOutToggleEnabled: false,
-    // Inherit ad studio from Pro
   };
 }
 
