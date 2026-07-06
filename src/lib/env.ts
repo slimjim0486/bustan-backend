@@ -98,6 +98,8 @@ const envSchema = z.object({
   STRIPE_PRO_PRICE_ID_V2: optionalString(),
   STRIPE_PORTFOLIO_PRICE_ID: optionalString(),
   STRIPE_PORTFOLIO_PRICE_ID_V2: optionalString(),
+  STRIPE_FULLTIME_PRICE_ID: optionalString(),
+  STRIPE_PORTFOLIO_PRICE_ID_V3: optionalString(),
   STRIPE_PORTFOLIO_EXTRA_BRAND_PRICE_ID: optionalString(),
   STRIPE_TRIAL_DAYS: z.coerce.number().int().positive().default(14),
   RESEND_API_KEY: optionalString(),
