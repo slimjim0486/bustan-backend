@@ -19,6 +19,13 @@ test("library contains both locales of both daily-brief variants", () => {
   ]);
 });
 
+test("template footers identify the WhatsApp surface as Bustan", () => {
+  for (const template of COWORKER_TEMPLATE_LIBRARY) {
+    assert.ok(template.footer?.includes("Bustan") || template.footer?.includes("بستان"));
+    assert.doesNotMatch(template.footer ?? "", /Coworker|كوركر/i);
+  }
+});
+
 test("findTemplate returns highest-version definition", () => {
   const tpl = findTemplate("coworker_daily_brief_full", "en");
   assert.ok(tpl, "expected template");

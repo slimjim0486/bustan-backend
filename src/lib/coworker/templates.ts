@@ -70,7 +70,7 @@ const DAILY_BRIEF_FULL_EN: CoworkerTemplateDefinition = {
     { id: "brief:reply_reviews", title: "⭐ Reply reviews" },
     { id: "brief:winback_vip", title: "🔁 Win-back VIP" },
   ],
-  footer: "Reply STOP to pause Bustan Coworker.",
+  footer: "Reply STOP to pause Bustan on WhatsApp.",
 };
 
 const DAILY_BRIEF_FULL_AR: CoworkerTemplateDefinition = {
@@ -106,7 +106,7 @@ const DAILY_BRIEF_FULL_AR: CoworkerTemplateDefinition = {
     { id: "brief:reply_reviews", title: "⭐ الرد على التقييمات" },
     { id: "brief:winback_vip", title: "🔁 استرجاع العملاء" },
   ],
-  footer: "أرسل STOP لإيقاف بستان كوركر.",
+  footer: "أرسل STOP لإيقاف بستان على واتساب.",
 };
 
 const DAILY_BRIEF_LITE_EN: CoworkerTemplateDefinition = {
@@ -138,7 +138,7 @@ const DAILY_BRIEF_LITE_EN: CoworkerTemplateDefinition = {
     { id: "brief:reply_reviews", title: "⭐ Reply reviews" },
     { id: "brief:ask_anything", title: "💬 Ask anything" },
   ],
-  footer: "Reply STOP to pause Bustan Coworker.",
+  footer: "Reply STOP to pause Bustan on WhatsApp.",
 };
 
 const DAILY_BRIEF_LITE_AR: CoworkerTemplateDefinition = {
@@ -170,7 +170,7 @@ const DAILY_BRIEF_LITE_AR: CoworkerTemplateDefinition = {
     { id: "brief:reply_reviews", title: "⭐ الرد على التقييمات" },
     { id: "brief:ask_anything", title: "💬 اسأل أي شيء" },
   ],
-  footer: "أرسل STOP لإيقاف بستان كوركر.",
+  footer: "أرسل STOP لإيقاف بستان على واتساب.",
 };
 
 export const COWORKER_TEMPLATE_LIBRARY: ReadonlyArray<CoworkerTemplateDefinition> = [

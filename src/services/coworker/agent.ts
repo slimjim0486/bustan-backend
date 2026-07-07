@@ -2,7 +2,7 @@
 //
 // Reuses everything the dashboard chat uses (OWNER_TOOLS + executeTool +
 // buildOwnerSystemPrompt + OwnerChatMessage thread + OwnerChatMemory) so the
-// owner gets the same Sous Chef whether they tap from the dashboard or DM
+// owner gets the same Bustan whether they tap from the dashboard or DM
 // from WhatsApp. Persisted history is the single source of truth — a
 // WhatsApp reply on Tuesday morning sees the questions the owner asked from
 // the dashboard on Monday afternoon.
@@ -18,6 +18,7 @@ import { estimateAiUsageCost, logAiUsage } from "@/lib/ai-usage";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { env } from "@/lib/env";
 import { ApiError } from "@/lib/errors";
+import { OWNER_AGENT } from "@/lib/owner-agent-identity";
 import { buildOwnerSystemPrompt } from "@/lib/owner-chat-prompts";
 import { prisma } from "@/lib/prisma";
 import { getStandingInstructions, STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
@@ -42,13 +43,10 @@ const INJECTION_PATTERNS = [
   /jailbreak/i,
 ];
 
-const INJECTION_REFUSAL =
-  "I'm Sous Chef, your restaurant assistant! How can I help you manage your restaurant today?";
-
 let anthropic: Anthropic | null = null;
 function getClient(): Anthropic {
   if (!env.ANTHROPIC_API_KEY) {
-    throw new ApiError("Sous Chef is not configured (ANTHROPIC_API_KEY missing).", 503);
+    throw new ApiError(OWNER_AGENT.notConfigured, 503);
   }
   if (!anthropic) {
     anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
@@ -58,7 +56,7 @@ function getClient(): Anthropic {
 
 function checkInjection(message: string): string | null {
   for (const pattern of INJECTION_PATTERNS) {
-    if (pattern.test(message)) return INJECTION_REFUSAL;
+    if (pattern.test(message)) return OWNER_AGENT.injectionRefusal;
   }
   return null;
 }
@@ -96,7 +94,7 @@ export interface AgentReply {
   refused: boolean;
 }
 
-/** Run the Sous Chef loop synchronously, return the final assistant text.
+/** Run the Bustan loop synchronously, return the final assistant text.
  *  Persists the user + assistant turn to OwnerChatMessage (source="whisper"
  *  per the existing schema's enum-ish convention — we use "whatsapp" so it's
  *  distinguishable in the dashboard thread). */

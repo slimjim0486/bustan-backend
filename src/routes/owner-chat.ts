@@ -6,6 +6,7 @@ import { checkAiLimit, getAiUsageSummary, logAiUsage } from "@/lib/ai-usage";
 import { env } from "@/lib/env";
 import { ApiError } from "@/lib/errors";
 import { errorResponse } from "@/lib/http";
+import { OWNER_AGENT } from "@/lib/owner-agent-identity";
 import { buildOwnerSystemPrompt } from "@/lib/owner-chat-prompts";
 import { getStandingInstructions, STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
 import { prisma } from "@/lib/prisma";
@@ -157,13 +158,10 @@ const INJECTION_PATTERNS = [
   /developer\s+mode\s+(enabled|on|activate)/i,
 ];
 
-const INJECTION_REFUSAL =
-  "I'm Sous Chef, your restaurant assistant! How can I help you manage your restaurant today?";
-
 function checkInjection(message: string): string | null {
   for (const pattern of INJECTION_PATTERNS) {
     if (pattern.test(message)) {
-      return INJECTION_REFUSAL;
+      return OWNER_AGENT.injectionRefusal;
     }
   }
   return null;
@@ -471,7 +469,7 @@ export const ownerChatRoute = new Hono<{
       // Entitlement gate: require Pro or Portfolio
       if (!entitlements.menuAssistantEnabled) {
         throw new ApiError(
-          "Sous Chef is available on Pro and Portfolio plans. Upgrade to unlock your AI assistant.",
+          OWNER_AGENT.unavailable,
           403
         );
       }

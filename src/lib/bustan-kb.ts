@@ -1,14 +1,13 @@
 /**
- * Bustan Knowledge Base — compact, customer-safe snippets surfaced to Sous Chef
- * (and any other diner-facing assistant) so it can answer occasional questions
- * about Bustan itself when a diner asks.
+ * Bustan Knowledge Base — compact, customer-safe snippets surfaced to Bustan
+ * so it can answer occasional questions about the platform.
  *
  * Keep this file lean: every word lives in the system prompt context window of
- * every Sous Chef call. The full deep KB lives in `docs/knowledge-base/` and
+ * every assistant call. The full deep KB lives in `docs/knowledge-base/` and
  * the customer-facing rendered version is at /help and /faq.
  *
  * Topics must stay in sync with the public /faq and /help pages. If a feature
- * ships or a price changes, update here too so Sous Chef gives the same
+ * ships or a price changes, update here too so Bustan gives the same
  * answer the public pages do.
  */
 
@@ -43,7 +42,7 @@ export const BUSTAN_KB: Record<BustanKbTopic, BustanKbEntry> = {
   overview: {
     topic: "overview",
     summary:
-      "Bustan is a growth platform built in the UAE for restaurants across the Gulf and MENA. UAE-first today (AED pricing, UAE PDPL compliance), with KSA and wider GCC localization on the roadmap. It bundles: (a) a hosted public menu page at getbustan.com/their-slug with AI-extracted menu, photos, dietary tags, operating hours, and Sous Chef diner chat; (b) a WhatsApp CRM that connects the restaurant's real WhatsApp Business Account and runs campaigns to opted-in customers; (c) Ad Creative Studio for Meta ads and a weekly Sabt Pack of 7 ready-to-publish social posts; (d) Google integrations — Google Business Profile (for review stars on the public page and SEO inputs), Google Search Console (Pro+ read-only impressions/clicks dashboard), and an SEO scorecard across 5 pillars including a rank grid for local keywords; (e) a portfolio dashboard for operators managing up to 3 brands (more via AED 99/extra); and (f) growth tools — embeddable menu widget, short links, QR codes, locations directory pages at getbustan.com/locations/[city]/[neighborhood]. Bustan is a trading name of Jasmine Entertainment FZE in Sharjah Publishing City, UAE.",
+      "Bustan is a growth platform built in the UAE for restaurants across the Gulf and MENA. UAE-first today (AED pricing, UAE PDPL compliance), with KSA and wider GCC localization on the roadmap. It bundles: (a) a hosted public menu page at getbustan.com/their-slug with AI-extracted menu, photos, dietary tags, operating hours, and Bustan diner chat; (b) a WhatsApp CRM that connects the restaurant's real WhatsApp Business Account and runs campaigns to opted-in customers; (c) Ad Creative Studio for Meta ads and a weekly Sabt Pack of 7 ready-to-publish social posts; (d) Google integrations — Google Business Profile (for review stars on the public page and SEO inputs), Google Search Console (Pro+ read-only impressions/clicks dashboard), and an SEO scorecard across 5 pillars including a rank grid for local keywords; (e) a portfolio dashboard for operators managing up to 3 brands (more via AED 99/extra); and (f) growth tools — embeddable menu widget, short links, QR codes, locations directory pages at getbustan.com/locations/[city]/[neighborhood]. Bustan is a trading name of Jasmine Entertainment FZE in Sharjah Publishing City, UAE.",
     links: ["https://getbustan.com", "https://getbustan.com/help"],
   },
   pricing: {
@@ -67,7 +66,7 @@ export const BUSTAN_KB: Record<BustanKbTopic, BustanKbEntry> = {
   ai_features: {
     topic: "ai_features",
     summary:
-      "Bustan ships several AI features for restaurant owners: AI menu extraction from PDFs/photos, AI dish image generation, photo enhancement for uploaded shots, an AI description writer, a dietary tagger (vegan, halal, gluten-free, etc.), a Menu Insights scorecard, an Ad Creative Studio for Meta ads, a weekly Sabt Pack of 7 social posts, and AI assistants — Sous Chef (for diners, on the public page) and Owner Chat (for the owner, in the dashboard). All AI runs on Anthropic Claude (text) and Google Gemini / OpenAI (images). Anthropic does not train its models on Bustan customer data.",
+      "Bustan ships several AI features for restaurant owners: AI menu extraction from PDFs/photos, AI dish image generation, photo enhancement for uploaded shots, an AI description writer, a dietary tagger (vegan, halal, gluten-free, etc.), a Menu Insights scorecard, an Ad Creative Studio for Meta ads, a weekly Sabt Pack of 7 social posts, and Bustan — the sunbird restaurant manager owners talk to in the dashboard and on WhatsApp. All AI runs on Anthropic Claude (text) and OpenAI (images). Anthropic does not train its models on Bustan customer data.",
     links: ["https://getbustan.com/help#ai", "https://getbustan.com/help#marketing"],
   },
   menu_import: {
@@ -79,7 +78,7 @@ export const BUSTAN_KB: Record<BustanKbTopic, BustanKbEntry> = {
   public_page: {
     topic: "public_page",
     summary:
-      "Every restaurant on Bustan gets a hosted page at getbustan.com/their-slug, with their menu, photos, dietary tags, operating hours, an 'Open now' badge, a WhatsApp CTA, delivery app links, promotions, and (on Pro+) the Sous Chef chat you're using right now. The page is mobile-first and Google-friendly out of the box.",
+      "Every restaurant on Bustan gets a hosted page at getbustan.com/their-slug, with their menu, photos, dietary tags, operating hours, an 'Open now' badge, a WhatsApp CTA, delivery app links, promotions, and (on paid plans) Bustan chat. The page is mobile-first and Google-friendly out of the box.",
     links: ["https://getbustan.com/help#public-page"],
   },
   whatsapp: {
@@ -121,7 +120,7 @@ export const BUSTAN_KB: Record<BustanKbTopic, BustanKbEntry> = {
   portfolio: {
     topic: "portfolio",
     summary:
-      "Portfolio is Bustan's plan for operators managing multiple brands from one account. AED 499.99/month flat covers up to 3 brands; additional brands are AED 99/month each. Portfolio unlocks: a brand switcher in the sidebar (flip between brands in one click), menu cloning (duplicate a menu or section from one brand to another with per-brand price overrides), cross-brand analytics (combined view of traffic, top dishes, WhatsApp engagement), per-brand QR generator, and a portfolio-wide SEO scorecard. Each brand keeps its own live restaurant page, menu, photos, WhatsApp CRM connection, AI quotas, and analytics — entitlements like dish image gen (300/mo per brand), Ad Studio (20 projects/mo per brand), and Sous Chef (2,000 msgs/mo per brand) are independent per brand, not shared across the portfolio. Pro users can upgrade to Portfolio anytime; the existing restaurant becomes brand #1 and they add the rest from Dashboard → Portfolio → Add brand. Cross-brand analytics and brand switcher unlock once 3 brands are set up.",
+      "Portfolio is Bustan's plan for operators managing multiple brands from one account. AED 499.99/month flat covers up to 3 brands; additional brands are AED 99/month each. Portfolio unlocks: a brand switcher in the sidebar (flip between brands in one click), menu cloning (duplicate a menu or section from one brand to another with per-brand price overrides), cross-brand analytics (combined view of traffic, top dishes, WhatsApp engagement), per-brand QR generator, and a portfolio-wide SEO scorecard. Each brand keeps its own live restaurant page, menu, photos, WhatsApp CRM connection, AI quotas, and analytics — entitlements like dish image gen (300/mo per brand), Ad Studio (20 projects/mo per brand), and Bustan chat (2,000 msgs/mo per brand) are independent per brand, not shared across the portfolio. Pro users can upgrade to Portfolio anytime; the existing restaurant becomes brand #1 and they add the rest from Dashboard → Portfolio → Add brand. Cross-brand analytics and brand switcher unlock once 3 brands are set up.",
     links: ["https://getbustan.com/help#portfolio"],
   },
   growth_tools: {
