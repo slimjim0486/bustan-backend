@@ -29,3 +29,69 @@ test("computeWeeklyTiles builds four tiles with direction", () => {
     ]
   );
 });
+
+import {
+  buildWeeklyReportPrompt,
+  parseWeeklyReportResponse,
+  type WeeklyReportSnapshot,
+} from "@/lib/owner-chat-prompts";
+
+const SNAP: WeeklyReportSnapshot = {
+  weekStartLocal: "2026-06-29",
+  weekEndLocal: "2026-07-05",
+  restaurantName: "Zaytoun",
+  tiles: [
+    { key: "scans", label: "Scans", value: 1240, deltaPct: 12, direction: "up" },
+    { key: "revenue", label: "Revenue", value: 8400, deltaPct: 6, direction: "up" },
+    { key: "orders", label: "Orders", value: 88, deltaPct: -4, direction: "down" },
+    { key: "whatsapp", label: "WhatsApp", value: 30, deltaPct: null, direction: "up" },
+  ],
+  topLikedItem: { name: "Lamb Ouzi", likes: 48 },
+  topViewedPath: { path: "/menu", views: 900 },
+  pendingReplies: 4,
+  menuHealth: { itemsMissingImages: 6, itemsMissingDescriptions: 2 },
+  hadTraffic: true,
+};
+
+test("buildWeeklyReportPrompt embeds the restaurant, JSON snapshot, and demands JSON out", () => {
+  const prompt = buildWeeklyReportPrompt(SNAP, []);
+  assert.match(prompt, /Zaytoun/);
+  assert.match(prompt, /"weekStartLocal": "2026-06-29"/);
+  assert.match(prompt, /narrative/);
+  assert.match(prompt, /actions/);
+});
+
+test("parseWeeklyReportResponse parses narrative + actions and clamps to 3", () => {
+  const raw = JSON.stringify({
+    narrative: "Strong week — footfall up, Tuesdays quiet.",
+    actions: [
+      { label: "Run a Tuesday promo", seedPrompt: "Create a Tuesday lunch promo", kind: "promo" },
+      { label: "Add 6 photos", seedPrompt: "Add photos to the 6 dishes missing them", kind: "menu" },
+      { label: "Clear inbox", seedPrompt: "Help me reply to the 4 unread WhatsApp chats", kind: "inbox" },
+      { label: "Fourth", seedPrompt: "extra", kind: "ads" },
+    ],
+  });
+  const parsed = parseWeeklyReportResponse(raw);
+  assert.ok(parsed);
+  assert.equal(parsed?.actions.length, 3);
+  assert.equal(parsed?.narrative, "Strong week — footfall up, Tuesdays quiet.");
+});
+
+test("parseWeeklyReportResponse drops actions with an invalid kind", () => {
+  const raw = JSON.stringify({
+    narrative: "ok",
+    actions: [
+      { label: "bad", seedPrompt: "x", kind: "nonsense" },
+      { label: "good", seedPrompt: "y", kind: "promo" },
+    ],
+  });
+  const parsed = parseWeeklyReportResponse(raw);
+  assert.equal(parsed?.actions.length, 1);
+  assert.equal(parsed?.actions[0].kind, "promo");
+});
+
+test("parseWeeklyReportResponse tolerates a fenced code block and returns null on garbage", () => {
+  const fenced = "```json\n" + JSON.stringify({ narrative: "hi", actions: [] }) + "\n```";
+  assert.equal(parseWeeklyReportResponse(fenced)?.narrative, "hi");
+  assert.equal(parseWeeklyReportResponse("not json at all"), null);
+});
