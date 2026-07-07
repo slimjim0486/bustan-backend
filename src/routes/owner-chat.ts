@@ -24,6 +24,7 @@ import {
 import { getOwnerTools, executeTool } from "@/services/owner-chat-tools";
 import { enqueueExtractionForRestaurant } from "@/queue/owner-chat-memory";
 import { enqueueWhisperForRestaurant } from "@/queue/owner-whisper";
+import { enqueueWeeklyReportForRestaurant } from "@/queue/weekly-report";
 
 // ── Schema ─────────────────────────────────────────────────────
 
@@ -232,21 +233,48 @@ export const ownerChatRoute = new Hono<{
           content: true,
           source: true,
           whisperId: true,
+          weeklyReportId: true,
+          draftId: true,
           model: true,
           createdAt: true,
         },
       });
 
+      const weeklyIds = rows
+        .filter((m) => m.source === "weekly_report" && m.weeklyReportId)
+        .map((m) => m.weeklyReportId as string);
+      const weeklyReports = weeklyIds.length
+        ? await prisma.weeklyReport.findMany({
+            where: { id: { in: weeklyIds } },
+            select: { id: true, metricsJson: true, actionsJson: true },
+          })
+        : [];
+      const weeklyById = new Map(weeklyReports.map((w) => [w.id, w]));
+
       return c.json({
-        messages: rows.reverse().map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          source: m.source,
-          whisperId: m.whisperId,
-          model: m.model,
-          createdAt: m.createdAt.toISOString(),
-        })),
+        messages: rows.reverse().map((m) => {
+          const weekly =
+            m.source === "weekly_report" && m.weeklyReportId
+              ? weeklyById.get(m.weeklyReportId)
+              : undefined;
+          return {
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            source: m.source,
+            whisperId: m.whisperId,
+            weeklyReportId: m.weeklyReportId,
+            draftId: m.draftId,
+            model: m.model,
+            createdAt: m.createdAt.toISOString(),
+            weeklyReport: weekly
+              ? {
+                  tiles: (weekly.metricsJson as { tiles?: unknown[] })?.tiles ?? [],
+                  actions: (weekly.actionsJson as unknown[]) ?? [],
+                }
+              : null,
+          };
+        }),
       });
     } catch (error) {
       return errorResponse(c, error);
@@ -368,6 +396,12 @@ export const ownerChatRoute = new Hono<{
         },
       });
 
+      const latestWeekly = await prisma.weeklyReport.findFirst({
+        where: { restaurantId },
+        orderBy: { generatedAt: "desc" },
+        select: { id: true, status: true, generatedAt: true, weekStart: true },
+      });
+
       return c.json({
         hasUnreadWhisper: latest?.status === "unread",
         latestWhisper: latest
@@ -377,6 +411,15 @@ export const ownerChatRoute = new Hono<{
               status: latest.status,
               generatedAt: latest.generatedAt.toISOString(),
               forDate: latest.forDate.toISOString().slice(0, 10),
+            }
+          : null,
+        hasUnreadWeeklyReport: latestWeekly?.status === "unread",
+        latestWeeklyReport: latestWeekly
+          ? {
+              id: latestWeekly.id,
+              status: latestWeekly.status,
+              generatedAt: latestWeekly.generatedAt.toISOString(),
+              weekStart: latestWeekly.weekStart.toISOString().slice(0, 10),
             }
           : null,
       });
@@ -405,6 +448,34 @@ export const ownerChatRoute = new Hono<{
       });
 
       return c.json({ ok: true, updated: result.count });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  // ── PATCH /:restaurantId/weekly-report/:reportId/read — mark a weekly report read
+  .patch("/:restaurantId/weekly-report/:reportId/read", requireAuth, async (c) => {
+    try {
+      const auth = c.get("auth");
+      const restaurantId = c.req.param("restaurantId");
+      const reportId = c.req.param("reportId");
+      await loadOwnedRestaurant(restaurantId, auth.clerkId);
+      await prisma.weeklyReport.updateMany({
+        where: { id: reportId, restaurantId, status: "unread" },
+        data: { status: "read", readAt: new Date() },
+      });
+      return c.json({ ok: true });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  // ── POST /:restaurantId/weekly-report/test — manual enqueue for smoke testing
+  .post("/:restaurantId/weekly-report/test", requireAuth, async (c) => {
+    try {
+      const auth = c.get("auth");
+      const restaurantId = c.req.param("restaurantId");
+      await loadOwnedRestaurant(restaurantId, auth.clerkId);
+      await enqueueWeeklyReportForRestaurant(restaurantId);
+      return c.json({ ok: true, queued: true });
     } catch (error) {
       return errorResponse(c, error);
     }
@@ -573,6 +644,9 @@ export const ownerChatRoute = new Hono<{
       };
       let accumulatedText = "";
       let modelUsed: string | null = null;
+      // First draft created during this turn's tool loop, stamped onto the
+      // persisted assistant message so the thread endpoint can hydrate it (C1 M2).
+      let firstDraftId: string | null = null;
       // Best-effort telemetry, not a replayable transcript: on escalation or
       // planner-failure fallback these can interleave calls from more than one
       // attempt. They are persisted for audit/debugging only.
@@ -694,6 +768,7 @@ export const ownerChatRoute = new Hono<{
                 }
 
                 if (result.draftId) {
+                  if (!firstDraftId) firstDraftId = result.draftId;
                   emit("draft", { draftId: result.draftId, tool: block.name });
                 }
 
@@ -880,6 +955,7 @@ export const ownerChatRoute = new Hono<{
                       toolResults: toolResultsJson,
                       source: "chat",
                       model: modelUsed,
+                      draftId: firstDraftId,
                     },
                   }),
                 ]);
