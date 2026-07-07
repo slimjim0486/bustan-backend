@@ -123,6 +123,42 @@ sunrise sky and softly suggested orchard behind. Generous negative space for a
 headline. Serene, premium.
 </composition>`,
   },
+  {
+    id: "scene-noon",
+    key: "assets/bustan-sunbird/bustan-scene-noon",
+    size: "1536x1024",
+    prompt: `Create a wide brand illustration (not an avatar).
+<subject>
+${SUBJECT} Here it is perched on a slender olive branch in the foreground, looking
+out over a calm orchard at bright midday. Room around the bird for an empty-state or
+report illustration.
+</subject>${STYLE_PAINTERLY}
+<composition>
+Landscape/wide frame, the bird perched to one side (rule of thirds), a luminous warm
+midday day-arc sky (pale warm cream-gold, high soft sun, gentle haze — stay in the
+amber/warm family, no cool blues) and softly suggested orchard behind. Generous
+negative space for a headline. Keep the palette and rendering consistent with the
+sunrise scene — only the light shifts to bright midday. Serene, premium.
+</composition>`,
+  },
+  {
+    id: "scene-sunset",
+    key: "assets/bustan-sunbird/bustan-scene-sunset",
+    size: "1536x1024",
+    prompt: `Create a wide brand illustration (not an avatar).
+<subject>
+${SUBJECT} Here it is perched on a slender olive branch in the foreground, looking
+out over a calm orchard at golden-hour sunset. Room around the bird for an empty-state
+or report illustration.
+</subject>${STYLE_PAINTERLY}
+<composition>
+Landscape/wide frame, the bird perched to one side (rule of thirds), a warm day-arc
+golden-hour sunset sky (deep amber, rose and honey dusk, low warm sun) and softly
+suggested orchard behind. Generous negative space for a headline. Keep the palette and
+rendering consistent with the sunrise scene — only the light shifts to golden-hour
+dusk. Serene, premium.
+</composition>`,
+  },
 ];
 
 async function main() {
