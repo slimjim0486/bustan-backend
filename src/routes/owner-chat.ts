@@ -458,6 +458,13 @@ export const ownerChatRoute = new Hono<{
       const auth = c.get("auth");
       const restaurantId = c.req.param("restaurantId");
       const reportId = c.req.param("reportId");
+      assertOwnerChatEndpointRateLimit({
+        action: "weekly-report-read",
+        clerkId: auth.clerkId,
+        restaurantId,
+        userLimit: 120,
+        restaurantLimit: 120,
+      });
       await loadOwnedRestaurant(restaurantId, auth.clerkId);
       await prisma.weeklyReport.updateMany({
         where: { id: reportId, restaurantId, status: "unread" },
@@ -474,6 +481,16 @@ export const ownerChatRoute = new Hono<{
       const auth = c.get("auth");
       const restaurantId = c.req.param("restaurantId");
       await loadOwnedRestaurant(restaurantId, auth.clerkId);
+      assertRateLimit({
+        key: `owner-chat:weekly-report-generate:restaurant:${restaurantId}`,
+        limit: 2,
+        windowMs: 60 * 60_000,
+      });
+      assertRateLimit({
+        key: `owner-chat:weekly-report-generate:user:${auth.clerkId}`,
+        limit: 4,
+        windowMs: 60 * 60_000,
+      });
       await enqueueWeeklyReportForRestaurant(restaurantId);
       return c.json({ ok: true, queued: true });
     } catch (error) {
