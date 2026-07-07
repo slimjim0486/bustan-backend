@@ -365,3 +365,56 @@ RULES
 SNAPSHOT (JSON):
 ${JSON.stringify(snapshot, null, 2)}${memoryBlock}`;
 }
+
+// =============================================================================
+// Weekly report — snapshot types and WoW (week-over-week) delta math
+// =============================================================================
+
+export interface WeeklyMetric {
+  thisWeek: number;
+  lastWeek: number;
+}
+
+export interface WeeklyTile {
+  key: "scans" | "revenue" | "orders" | "whatsapp";
+  label: string;
+  value: number;
+  deltaPct: number | null;
+  direction: "up" | "down" | "flat";
+}
+
+/** Week-over-week percent change, rounded to an integer. Returns null when last
+ *  week is a zero baseline (avoid divide-by-zero / infinite growth). */
+export function weeklyDeltaPct(thisWeek: number, lastWeek: number): number | null {
+  if (lastWeek === 0) return null;
+  return Math.round(((thisWeek - lastWeek) / lastWeek) * 100);
+}
+
+function tileDirection(deltaPct: number | null): "up" | "down" | "flat" {
+  if (deltaPct === null) return "up"; // brand-new activity reads as growth
+  if (deltaPct > 0) return "up";
+  if (deltaPct < 0) return "down";
+  return "flat";
+}
+
+export function computeWeeklyTiles(m: {
+  scans: WeeklyMetric;
+  revenueAed: WeeklyMetric;
+  orders: WeeklyMetric;
+  whatsappClicks: WeeklyMetric;
+}): WeeklyTile[] {
+  const build = (
+    key: WeeklyTile["key"],
+    label: string,
+    metric: WeeklyMetric
+  ): WeeklyTile => {
+    const deltaPct = weeklyDeltaPct(metric.thisWeek, metric.lastWeek);
+    return { key, label, value: metric.thisWeek, deltaPct, direction: tileDirection(deltaPct) };
+  };
+  return [
+    build("scans", "Scans", m.scans),
+    build("revenue", "Revenue", m.revenueAed),
+    build("orders", "Orders", m.orders),
+    build("whatsapp", "WhatsApp", m.whatsappClicks),
+  ];
+}
