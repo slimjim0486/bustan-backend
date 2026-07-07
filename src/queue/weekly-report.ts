@@ -93,6 +93,14 @@ export function lastCompletedWeekStartIso(nowUtcMs: number): string {
   return currentWeekMonday.toISOString().slice(0, 10);
 }
 
+/** The last day (Sunday, Dubai) of a Mon–Sun week that begins on `weekStartIso`,
+ *  as "YYYY-MM-DD" = weekStart + 6 days. Pure string-date arithmetic; no TZ round-trip. */
+export function weekEndLocalIso(weekStartIso: string): string {
+  const d = new Date(`${weekStartIso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 6);
+  return d.toISOString().slice(0, 10);
+}
+
 /** UTC [start, end) covering a Dubai-local week that begins on `weekStartIso`. */
 function dubaiWeekToUtcRange(weekStartIso: string): { start: Date; end: Date } {
   // 00:00 Dubai on weekStart = weekStartT00:00:00Z minus 4h.
@@ -179,7 +187,7 @@ async function buildWeeklySnapshot(
 ): Promise<WeeklyReportSnapshot> {
   const { start, end } = dubaiWeekToUtcRange(weekStart);
   const prevStart = new Date(start.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const weekEndIso = new Date(end.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const weekEndIso = weekEndLocalIso(weekStart);
 
   const scanCount = (from: Date, to: Date) =>
     prisma.pageView.count({ where: { restaurantId, createdAt: { gte: from, lt: to } } });
