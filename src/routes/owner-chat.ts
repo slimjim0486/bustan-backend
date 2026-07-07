@@ -245,7 +245,7 @@ export const ownerChatRoute = new Hono<{
         .map((m) => m.weeklyReportId as string);
       const weeklyReports = weeklyIds.length
         ? await prisma.weeklyReport.findMany({
-            where: { id: { in: weeklyIds } },
+            where: { id: { in: weeklyIds }, restaurantId },
             select: { id: true, metricsJson: true, actionsJson: true },
           })
         : [];
