@@ -1,3 +1,4 @@
+import { DraftActionStatus } from "@prisma/client";
 import type { PlanEntitlements } from "@/lib/entitlements";
 import { prisma } from "@/lib/prisma";
 import { approveDraft } from "@/services/draft-actions";
@@ -83,11 +84,46 @@ export async function maybeAutoExecuteDraft(args: {
   const graceMs = highImpact ? HIGH_IMPACT_GRACE_MS : REVERSIBLE_GRACE_MS;
   const shipAt = new Date(Date.now() + graceMs);
 
-  const approval = await approveDraft(result.draftId!, restaurantId, clerkId, { shipAt });
-  await prisma.draftAction.update({ where: { id: result.draftId! }, data: { autoExecuted: true } });
-  await Promise.all(
-    approval.toShip.filter((d) => d.shipAt !== null).map((d) => enqueueDraftShip(d.id, d.shipAt!)),
-  );
+  let approval: Awaited<ReturnType<typeof approveDraft>> | undefined;
+  try {
+    approval = await approveDraft(result.draftId!, restaurantId, clerkId, { shipAt });
+    await prisma.draftAction.update({ where: { id: result.draftId! }, data: { autoExecuted: true } });
+    await Promise.all(
+      approval.toShip.filter((d) => d.shipAt !== null).map((d) => enqueueDraftShip(d.id, d.shipAt!)),
+    );
+  } catch (err) {
+    console.error("[b1b] auto-execute failed; degrading to staged draft", {
+      draftId: result.draftId,
+      toolName,
+      err,
+    });
+    // If approve already scheduled the row(s) but a later step failed, revert them to
+    // pending so the draft is cleanly staged in the Inbox — never orphaned-scheduled.
+    if (approval) {
+      await prisma.draftAction
+        .updateMany({
+          where: {
+            id: { in: approval.toShip.map((d) => d.id) },
+            restaurantId,
+            status: DraftActionStatus.scheduled,
+          },
+          data: {
+            status: DraftActionStatus.pending,
+            shipAt: null,
+            decisionAt: null,
+            decidedBy: null,
+            autoExecuted: false,
+          },
+        })
+        .catch((revertErr) =>
+          console.error("[b1b] revert-to-pending after failed auto-execute also failed", {
+            draftId: result.draftId,
+            revertErr,
+          }),
+        );
+    }
+    return result; // passthrough — turn continues, owner approves from the Inbox
+  }
 
   // Fire-and-forget — never block the tool loop on a notification.
   void notifyOwnerAutoAction({ restaurantId, toolName, draftId: result.draftId!, highImpact }).catch(
