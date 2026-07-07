@@ -287,44 +287,44 @@ model User {
 }
 
 model Restaurant {
-  id                   String             @id @default(cuid())
-  slug                 String             @unique
-  name                 String
-  description          String?
-  nameAr               String?            @map("name_ar")
-  descriptionAr        String?            @map("description_ar")
-  arabicEnabled        Boolean            @default(false) @map("arabic_enabled")
-  cuisineType          String?            @map("cuisine_type")
-  themeKey             String?            @map("theme_key")
-  location             String?
-  address              String?
-  phone                String?
-  website              String?
-  whatsappNumber       String?            @map("whatsapp_number")
-  whatsappPrefill      String?            @map("whatsapp_prefill")
-  deliverooUrl         String?            @map("deliveroo_url")
-  talabatUrl           String?            @map("talabat_url")
-  uberEatsUrl          String?            @map("uber_eats_url")
-  operatingHours       Json?              @map("operating_hours")
-  logoUrl              String?            @map("logo_url")
-  coverImageUrl        String?            @map("cover_image_url")
-  isPublished          Boolean            @default(false) @map("is_published")
-  isDemo               Boolean            @default(false) @map("is_demo")
-  subscriptionStatus   SubscriptionStatus @default(trial) @map("subscription_status")
-  trialEndsAt          DateTime?          @map("trial_ends_at")
-  sabtPackEnabled      Boolean            @default(true) @map("sabt_pack_enabled")
-  eventCalendarEnabled Boolean            @default(true) @map("event_calendar_enabled")
-  ordersV1Enabled      Boolean            @default(false) @map("orders_v1_enabled")
-  sousChefRoutingEnabled Boolean          @default(false) @map("sous_chef_routing_enabled")
+  id                     String             @id @default(cuid())
+  slug                   String             @unique
+  name                   String
+  description            String?
+  nameAr                 String?            @map("name_ar")
+  descriptionAr          String?            @map("description_ar")
+  arabicEnabled          Boolean            @default(false) @map("arabic_enabled")
+  cuisineType            String?            @map("cuisine_type")
+  themeKey               String?            @map("theme_key")
+  location               String?
+  address                String?
+  phone                  String?
+  website                String?
+  whatsappNumber         String?            @map("whatsapp_number")
+  whatsappPrefill        String?            @map("whatsapp_prefill")
+  deliverooUrl           String?            @map("deliveroo_url")
+  talabatUrl             String?            @map("talabat_url")
+  uberEatsUrl            String?            @map("uber_eats_url")
+  operatingHours         Json?              @map("operating_hours")
+  logoUrl                String?            @map("logo_url")
+  coverImageUrl          String?            @map("cover_image_url")
+  isPublished            Boolean            @default(false) @map("is_published")
+  isDemo                 Boolean            @default(false) @map("is_demo")
+  subscriptionStatus     SubscriptionStatus @default(trial) @map("subscription_status")
+  trialEndsAt            DateTime?          @map("trial_ends_at")
+  sabtPackEnabled        Boolean            @default(true) @map("sabt_pack_enabled")
+  eventCalendarEnabled   Boolean            @default(true) @map("event_calendar_enabled")
+  ordersV1Enabled        Boolean            @default(false) @map("orders_v1_enabled")
+  sousChefRoutingEnabled Boolean            @default(false) @map("sous_chef_routing_enabled")
   // B1b real autonomy. Owner master opt-in (default OFF): the plan entitlement
   // is the ceiling, this is the actual switch. autonomyResumedAt zeroes the
   // velocity-breaker rolling window when the owner taps Resume.
-  agentAutonomyOptIn Boolean   @default(false) @map("agent_autonomy_opt_in")
-  autonomyResumedAt  DateTime? @map("autonomy_resumed_at")
-  ownerId              String             @map("owner_user_id")
-  operatorAccountId    String?            @map("operator_account_id")
-  createdAt            DateTime           @default(now()) @map("created_at")
-  updatedAt            DateTime           @updatedAt @map("updated_at")
+  agentAutonomyOptIn     Boolean            @default(false) @map("agent_autonomy_opt_in")
+  autonomyResumedAt      DateTime?          @map("autonomy_resumed_at")
+  ownerId                String             @map("owner_user_id")
+  operatorAccountId      String?            @map("operator_account_id")
+  createdAt              DateTime           @default(now()) @map("created_at")
+  updatedAt              DateTime           @updatedAt @map("updated_at")
 
   owner                     User                         @relation(fields: [ownerId], references: [id])
   operatorAccount           OperatorAccount?             @relation(fields: [operatorAccountId], references: [id], onDelete: SetNull)
@@ -359,6 +359,7 @@ model Restaurant {
   ownerChatMessages         OwnerChatMessage[]
   ownerChatMemories         OwnerChatMemory[]
   ownerWhispers             OwnerWhisper[]
+  weeklyReports             WeeklyReport[]
   gscSnapshots              GscSnapshot[]
   supportTickets            SupportTicket[]
   supportMessages           SupportTicketMessage[]
@@ -754,7 +755,7 @@ model Customer {
   orderCount        Int       @default(0) @map("order_count")
   totalSpend        Decimal   @default(0) @map("total_spend") @db.Decimal(10, 2)
   currency          String    @default("AED")
-  preferredLanguage String?  @map("preferred_language")
+  preferredLanguage String?   @map("preferred_language")
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
@@ -1348,25 +1349,25 @@ model AiUsageLog {
 // expected — one per subscribed neighbor — and that's intentional: each row
 // caches the distance computed from THAT neighbor's perspective.
 model CompetitorSnapshot {
-  id                String   @id @default(cuid())
-  restaurantId      String   @map("restaurant_id")
-  competitorPlaceId String   @map("competitor_place_id")
-  weekBucket        String   @map("week_bucket") // "YYYY-MM-DD" — Sunday of the week (UAE)
+  id                String @id @default(cuid())
+  restaurantId      String @map("restaurant_id")
+  competitorPlaceId String @map("competitor_place_id")
+  weekBucket        String @map("week_bucket") // "YYYY-MM-DD" — Sunday of the week (UAE)
 
   // Identity / proximity (from Google Maps nearbysearch)
   name           String
   address        String?
-  distanceMeters Int?    @map("distance_meters")
+  distanceMeters Int?     @map("distance_meters")
   cuisine        String?
   rating         Decimal? @db.Decimal(2, 1)
   reviewCount    Int?     @map("review_count")
 
   // Exa-derived payloads (each is an array of structured items; null if the
   // collector failed for this competitor this week)
-  menuItems     Json? @map("menu_items")     // [{name, price, isNew, source}]
-  promotions    Json?                         // [{title, validUntil, source}]
+  menuItems     Json? @map("menu_items") // [{name, price, isNew, source}]
+  promotions    Json? // [{title, validUntil, source}]
   pressMentions Json? @map("press_mentions") // [{title, url, publishedAt}]
-  webReviews    Json? @map("web_reviews")    // [{snippet, sentiment, source}]
+  webReviews    Json? @map("web_reviews") // [{snippet, sentiment, source}]
 
   // Per-collector status so the digest synthesizer can hedge when collectors
   // partially failed ("3 of 5 competitors had menu data this week").
@@ -1389,14 +1390,14 @@ model CompetitorSnapshot {
 // for the week land; holds the headline insight Sous Chef proactively delivers
 // on Monday morning + a CTA payload deep-linking into Ad Studio.
 model CompetitorIntelDigest {
-  id                String   @id @default(cuid())
-  restaurantId      String   @map("restaurant_id")
-  weekBucket        String   @map("week_bucket")
-  topInsight        String?  @map("top_insight")
-  recommendedAction Json?    @map("recommended_action") // {label, ctaRoute, ctaParams}
-  competitorsCount  Int      @default(0) @map("competitors_count")
+  id                String    @id @default(cuid())
+  restaurantId      String    @map("restaurant_id")
+  weekBucket        String    @map("week_bucket")
+  topInsight        String?   @map("top_insight")
+  recommendedAction Json?     @map("recommended_action") // {label, ctaRoute, ctaParams}
+  competitorsCount  Int       @default(0) @map("competitors_count")
   notifiedAt        DateTime? @map("notified_at") // when Sous Chef pushed it
-  generatedAt       DateTime @default(now()) @map("generated_at")
+  generatedAt       DateTime  @default(now()) @map("generated_at")
 
   @@unique([restaurantId, weekBucket])
   @@index([restaurantId, generatedAt])
@@ -1748,23 +1749,27 @@ model AdExport {
 // =============================================================================
 
 model OwnerChatMessage {
-  id           String   @id @default(cuid())
-  restaurantId String   @map("restaurant_id")
-  role         String // "user" | "assistant" | "system"
-  content      String   @db.Text
-  toolCalls    Json?    @map("tool_calls") // serialized tool_use blocks
-  toolResults  Json?    @map("tool_results") // serialized tool_result blocks
-  authorUserId String?  @map("author_user_id") // clerkId for user messages; null otherwise
-  source       String   @default("chat") // "chat" | "whisper" | "system"
-  model        String?  // Anthropic model id that authored an assistant message; null for user/system rows and pre-routing history
-  whisperId    String?  @map("whisper_id") // optional link back to OwnerWhisper
-  createdAt    DateTime @default(now()) @map("created_at")
+  id             String   @id @default(cuid())
+  restaurantId   String   @map("restaurant_id")
+  role           String // "user" | "assistant" | "system"
+  content        String   @db.Text
+  toolCalls      Json?    @map("tool_calls") // serialized tool_use blocks
+  toolResults    Json?    @map("tool_results") // serialized tool_result blocks
+  authorUserId   String?  @map("author_user_id") // clerkId for user messages; null otherwise
+  source         String   @default("chat") // "chat" | "whisper" | "system"
+  model          String? // Anthropic model id that authored an assistant message; null for user/system rows and pre-routing history
+  whisperId      String?  @map("whisper_id") // optional link back to OwnerWhisper
+  weeklyReportId String?  @map("weekly_report_id") // optional link back to WeeklyReport
+  draftId        String?  @map("draft_id") // draft created in this assistant turn (C1 M2 hydration)
+  createdAt      DateTime @default(now()) @map("created_at")
 
-  restaurant Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  whisper    OwnerWhisper? @relation(fields: [whisperId], references: [id], onDelete: SetNull)
+  restaurant   Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  whisper      OwnerWhisper? @relation(fields: [whisperId], references: [id], onDelete: SetNull)
+  weeklyReport WeeklyReport? @relation(fields: [weeklyReportId], references: [id], onDelete: SetNull)
 
   @@index([restaurantId, createdAt])
   @@index([whisperId])
+  @@index([weeklyReportId])
   @@map("owner_chat_messages")
 }
 
@@ -1805,6 +1810,26 @@ model OwnerWhisper {
   @@unique([restaurantId, forDate])
   @@index([restaurantId, generatedAt])
   @@map("owner_whispers")
+}
+
+model WeeklyReport {
+  id           String    @id @default(cuid())
+  restaurantId String    @map("restaurant_id")
+  weekStart    DateTime  @map("week_start") @db.Date // Monday (Dubai) of covered Mon–Sun week
+  narrative    String    @db.Text // LLM prose, "how the week went"
+  metricsJson  Json      @map("metrics_json") // deterministic tiles + WoW deltas
+  actionsJson  Json      @map("actions_json") // 2–3 proposals: {label, seedPrompt, kind}
+  status       String    @default("unread") // "unread" | "read" | "dismissed"
+  readAt       DateTime? @map("read_at")
+  generatedAt  DateTime  @default(now()) @map("generated_at")
+  costUsd      Float     @default(0) @map("cost_usd")
+
+  restaurant Restaurant         @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  messages   OwnerChatMessage[]
+
+  @@unique([restaurantId, weekStart])
+  @@index([restaurantId, generatedAt])
+  @@map("weekly_reports")
 }
 
 // =============================================================================
@@ -2121,8 +2146,8 @@ model DraftAction {
   source     DraftActionSource
   status     DraftActionStatus @default(pending)
 
-  channel        String  @default("dashboard_chat") @map("channel")        // owner_whatsapp | dashboard_chat | diner_public | system_cron
-  autonomyTier   Int     @default(2) @map("autonomy_tier")                 // 0-3 snapshot at proposal time (spec §3)
+  channel        String  @default("dashboard_chat") @map("channel") // owner_whatsapp | dashboard_chat | diner_public | system_cron
+  autonomyTier   Int     @default(2) @map("autonomy_tier") // 0-3 snapshot at proposal time (spec §3)
   idempotencyKey String? @unique @map("idempotency_key")
   // B1b: true when Bustan auto-approved this draft (guarded_auto), vs. the
   // owner approving it. Powers Activity-Feed labeling + the velocity counter.
