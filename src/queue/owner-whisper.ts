@@ -15,6 +15,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
 import { getBoss } from "@/queue/image-generation";
+import { WEEKLY_ELIGIBLE_PLANS } from "@/queue/weekly-report";
 import { createSousChefMessage } from "@/services/anthropic-models";
 
 export const OWNER_WHISPER_FANOUT_JOB = "owner-whisper-fanout";
@@ -119,6 +120,13 @@ function uaeYesterdayIso(): string {
   return yesterday.toISOString().slice(0, 10);
 }
 
+/** True when the current instant is a Monday in Asia/Dubai (UTC+4). Weekly
+ *  reports fire Monday and replace that morning's daily whisper for
+ *  weekly-eligible restaurants. */
+export function isDubaiMonday(nowUtcMs: number): boolean {
+  return new Date(nowUtcMs + 4 * 60 * 60 * 1000).getUTCDay() === 1;
+}
+
 /** Convert a "YYYY-MM-DD" Dubai-local date into the UTC [start, end) range
  *  that covers that day in Dubai (UTC+4). */
 function dubaiDateToUtcRange(isoDate: string): { start: Date; end: Date } {
@@ -133,6 +141,7 @@ function dubaiDateToUtcRange(isoDate: string): { start: Date; end: Date } {
 async function fanOutWhisperJobs() {
   const forDate = uaeYesterdayIso();
   const whisperDate = new Date(forDate);
+  const suppressForWeekly = isDubaiMonday(Date.now());
 
   // Find every restaurant on Pro/Portfolio that doesn't already have a whisper
   // for this date. We don't filter for "had traffic" — quiet-day whispers are
@@ -141,6 +150,23 @@ async function fanOutWhisperJobs() {
     where: {
       subscriptionStatus: { in: ["active", "trial"] },
       ownerWhispers: { none: { forDate: whisperDate } },
+      // On Mondays, weekly-eligible restaurants get the weekly report instead
+      // of the daily whisper — exclude them so there is exactly one morning
+      // moment. (Known edge: operator-account restaurants have no
+      // subscription.plan, so this NOT clause doesn't exclude them — see
+      // commit body.)
+      ...(suppressForWeekly
+        ? {
+            NOT: {
+              subscription: {
+                is: {
+                  plan: { in: [...WEEKLY_ELIGIBLE_PLANS] },
+                  status: { in: ["active", "trial"] },
+                },
+              },
+            },
+          }
+        : {}),
       OR: [
         {
           subscription: {
