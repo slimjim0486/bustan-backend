@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-test("portfolio inherits Full-time autonomy + uncapped, keeps multi-brand", async () => {
+test("portfolio inherits Full-time autonomy + fair-use output, keeps multi-brand", async () => {
   const { getPlanEntitlements } = await import("./entitlements.js");
   const p = getPlanEntitlements("portfolio");
 

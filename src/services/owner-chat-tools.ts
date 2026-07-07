@@ -4267,13 +4267,13 @@ async function execGetCompetitorActivity(
   input: Input
 ): Promise<ToolResult> {
   if (!entitlements.competitorIntelligenceEnabled) {
-    return {
-      content: JSON.stringify({
-        status: "not_eligible",
-        message:
-          "Market Pulse is on Pro and Portfolio. Tell the owner upgrading unlocks weekly competitor menu, promo, press, and review tracking — and offer to walk them through plans (use get_bustan_info topic=pricing).",
-      }),
-    };
+	    return {
+	      content: JSON.stringify({
+	        status: "not_eligible",
+	        message:
+	          "Market Pulse is on paid roles. Tell the owner upgrading unlocks weekly competitor menu, promo, press, and review tracking — and offer to walk them through plans (use get_bustan_info topic=pricing).",
+	      }),
+	    };
   }
 
   const requestedWeek =
@@ -4562,11 +4562,11 @@ async function execGetWidgetStatus(restaurantId: string): Promise<ToolResult> {
       slug: restaurant.slug,
       menuUrl,
       embedUrl,
-      embedCode,
-      upsellHint: entitlements.widgetEnabled
-        ? null
-        : "Widget embeds are available on Pro and Portfolio plans.",
-    }),
+	      embedCode,
+	      upsellHint: entitlements.widgetEnabled
+	        ? null
+	        : "Widget embeds are available on paid roles.",
+	    }),
   };
 }
 

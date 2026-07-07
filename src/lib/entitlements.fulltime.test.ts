@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-test("fulltime is Pro-level plus autonomy and uncapped output", async () => {
+test("fulltime is Pro-level plus autonomy and fair-use output", async () => {
   const { getPlanEntitlements } = await import("./entitlements.js");
   const ft = getPlanEntitlements("fulltime");
   const pro = getPlanEntitlements("pro");

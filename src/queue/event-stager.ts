@@ -118,7 +118,7 @@ async function fanOutEventStagerJobs() {
     where: {
       eventCalendarEnabled: true,
       subscriptionStatus: { in: ["active", "trial"] },
-      // Subscription branch: Pro or Portfolio (matches the entitlement gate
+      // Subscription branch: paid roles (matches the entitlement gate
       // checked again per-restaurant inside processRunJob).
       OR: [
         {

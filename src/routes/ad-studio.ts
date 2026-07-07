@@ -1753,7 +1753,7 @@ adStudioRoute.post("/creatives/:creativeId/regenerate-image", async (c) => {
     const restaurant = await loadRestaurantForUser(creative.project.restaurantId, auth.clerkId);
     ensureAdStudioEnabled(restaurant);
 
-    // OpenAI gating: feature is gated to Pro+ (Starter has no Ad Studio
+    // OpenAI gating: feature is gated to paid roles (Starter has no Ad Studio
     // anyway), and additionally requires the API key to be configured at
     // the platform level. This keeps the dropdown actionable in the UI
     // and surfaces a single clean error rather than a 502 from upstream.

@@ -4,21 +4,14 @@ import { prisma } from "@/lib/prisma";
 import { approveDraft } from "@/services/draft-actions";
 import { enqueueDraftShip } from "@/queue/draft-ship";
 import { getToolTier } from "@/services/agent/autonomy-tiers";
-import { resolveEffectiveAutonomy, isHighImpactPaused, decideAutoExecution } from "./autonomy";
+import {
+  resolveEffectiveAutonomy,
+  isHighImpactPaused,
+  decideAutoExecution,
+  isHighImpactActionType,
+  graceMsForAutoExecute,
+} from "./autonomy";
 import { notifyOwnerAutoAction } from "./autonomy-notify";
-
-// Tool names whose drafts are high-impact (customer sends / destructive deletes
-// / money-spending generation). Drives the longer grace window + the velocity
-// breaker. Mirrors HIGH_IMPACT_ACTION_TYPES but keyed by the tool the LLM calls.
-const HIGH_IMPACT_TOOLS: ReadonlySet<string> = new Set([
-  "send_whatsapp_campaign",
-  "delete_menu_items",
-  "generate_dish_images",
-  "create_ad_campaign",
-]);
-
-const HIGH_IMPACT_GRACE_MS = 5 * 60 * 1000;
-const REVERSIBLE_GRACE_MS = 60 * 1000;
 
 // Mirrors ToolResult from owner-chat-tools.ts. Duplicated (rather than
 // imported) so this stays a leaf module with no dependency back on the
@@ -48,9 +41,18 @@ export async function maybeAutoExecuteDraft(args: {
 }): Promise<ToolResultLike> {
   const { result, toolName, restaurantId, clerkId, entitlements, restaurant } = args;
 
-  const highImpact = HIGH_IMPACT_TOOLS.has(toolName);
   const effective = resolveEffectiveAutonomy(restaurant, entitlements);
   const isDryRun = !!result.draftId && result.draftId.startsWith("dryrun_");
+  const draftActionType =
+    result.draftId && !isDryRun
+      ? (
+          await prisma.draftAction.findFirst({
+            where: { id: result.draftId, restaurantId },
+            select: { actionType: true },
+          })
+        )?.actionType ?? null
+      : null;
+  const highImpact = draftActionType ? isHighImpactActionType(draftActionType) : false;
 
   // Only consult the velocity breaker (a DB count) when it can matter.
   const paused =
@@ -81,7 +83,7 @@ export async function maybeAutoExecuteDraft(args: {
   }
 
   // decision === "auto"
-  const graceMs = highImpact ? HIGH_IMPACT_GRACE_MS : REVERSIBLE_GRACE_MS;
+  const graceMs = graceMsForAutoExecute(draftActionType ?? "");
   const shipAt = new Date(Date.now() + graceMs);
 
   let approval: Awaited<ReturnType<typeof approveDraft>> | undefined;

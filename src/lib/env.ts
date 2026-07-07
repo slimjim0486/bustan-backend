@@ -30,7 +30,7 @@ const envSchema = z.object({
   GOOGLE_IMAGE_FALLBACK_MODEL: optionalString(),
   // OpenAI image generation (Ad Studio operator-selectable provider).
   // GPT Image is best-in-class for product/food photography per operator
-  // testing; gated to Pro+ plans and to a daily per-restaurant cap. Cost
+  // testing; gated to paid roles and to a daily per-restaurant cap. Cost
   // defaults to $0.19/image (high-quality 1024x1024) and should
   // be refreshed when the first invoice arrives.
   // OpenAI keys are `sk-…` (legacy ~51 chars) or `sk-proj-…` (newer 150+).
@@ -140,12 +140,12 @@ const envSchema = z.object({
   // plan) plus an absolute circuit-breaker hardcoded in the orchestrator;
   // no env override needed.
 
-  // ── Coworker ─────────────────────────────────────────────────────
-  // Sous Chef delivered over WhatsApp on Bustan's own WABA. Separate Meta
+  // ── Bustan on WhatsApp ────────────────────────────────────────────
+  // Bustan delivered over WhatsApp on Bustan's own WABA. Separate Meta
   // app from the customer-ordering WhatsAppIntegration (which uses
   // META_APP_ID/META_APP_SECRET above via Embedded Signup per restaurant).
-  // Coworker uses a single Bustan-owned phone number + system-user token, so
-  // no per-restaurant token encryption is needed.
+  // This uses a single Bustan-owned phone number + system-user token, so no
+  // per-restaurant token encryption is needed.
   //
   // When COWORKER_ENABLED is false, every send path short-circuits and every
   // webhook returns 200 OK without dispatching to the LLM — the entire
@@ -158,14 +158,14 @@ const envSchema = z.object({
   COWORKER_DRY_RUN_PHONE: optionalString(),
   /** WhatsApp Business Account ID Bustan owns (Jasmine Entertainment FZE). */
   COWORKER_WABA_ID: optionalString(),
-  /** Phone number ID for the Bustan Coworker number, NOT a per-restaurant id. */
+  /** Phone number ID for the Bustan-owned number, NOT a per-restaurant id. */
   COWORKER_PHONE_NUMBER_ID: optionalString(),
   /** System-user permanent token scoped to the Bustan WABA. Distinct from
    *  per-restaurant tokens stored in WhatsAppIntegration.accessTokenCipher. */
   COWORKER_ACCESS_TOKEN: optionalString(),
   /** Webhook verify token Bustan sets in Meta's WhatsApp app webhook config. */
   COWORKER_WEBHOOK_VERIFY_TOKEN: optionalString(z.string().min(16)),
-  /** App secret for the Bustan Coworker Meta app — verifies inbound webhooks. */
+  /** App secret for the Bustan-owned Meta app — verifies inbound webhooks. */
   COWORKER_APP_SECRET: optionalString(),
   /** Display phone number for greetings / opt-in QR code, e.g. "+971501234567". */
   COWORKER_DISPLAY_PHONE: optionalString(),

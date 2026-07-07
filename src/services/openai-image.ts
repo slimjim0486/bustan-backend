@@ -1,6 +1,6 @@
 // OpenAI image generation (GPT Image 2) for Ad Studio.
 //
-// Operator-selectable provider — the dashboard regen UI lets a Pro+
+// Operator-selectable provider — the dashboard regen UI lets a paid-role
 // owner pick "GPT Image 2" instead of the default Gemini path. GPT Image
 // is best-in-class for product / food photography per operator testing
 // but costs ~5x Gemini, so it's gated to a per-restaurant daily cap.

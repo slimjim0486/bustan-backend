@@ -184,7 +184,7 @@ const PLAN_ENTITLEMENTS: Record<
     analyticsTier: "advanced",
     imageGenerationPriority: 20, // above Pro's 10
     priorityImageGeneration: true,
-    // "Uncapped" = generous fair-use ceilings, not literally unbounded. These
+    // Fair-use ceilings, not literally unbounded. These
     // bound the only per-unit COGS surface (gpt-image-2 ~$0.19/image) at
     // abuse-tier volume; a real restaurant never approaches them. Cheap LLM
     // text analyses stay null (truly uncapped). Per COO margins guardrail.
@@ -391,15 +391,15 @@ function getPendingPortfolioEntitlements(): PlanEntitlements {
 }
 
 export function getAdStudioUpgradeMessage() {
-  return "The Ad Creative Studio is available on Pro. Upgrade to generate ads from your menu in minutes.";
+  return "The Ad Creative Studio is available on paid roles. Upgrade to generate ads from your menu in minutes.";
 }
 
 export function getSabtPackUpgradeMessage() {
-  return "Sabt Pack delivers 7 ready-to-publish posts every Sunday morning. Available on Pro and Portfolio.";
+  return "Sabt Pack delivers 7 ready-to-publish posts every Sunday morning. Available on paid roles.";
 }
 
 export function getCompetitorIntelUpgradeMessage() {
-  return "Market Pulse tracks competitors near you every week — menus, promos, press mentions, and review activity. Available on Pro and Portfolio.";
+  return "Market Pulse tracks competitors near you every week — menus, promos, press mentions, and review activity. Available on paid roles.";
 }
 
 export function getPlanEntitlements(plan: SubscriptionPlan): PlanEntitlements {
@@ -445,7 +445,7 @@ export function getRestaurantEntitlements(source: RestaurantPlanSource): PlanEnt
   const base = plan ? getPlanEntitlements(plan) : DRAFT_ENTITLEMENTS;
 
   // "First two weeks are on us — full-time": only a SELECTED paid tier's 14-day
-  // trial grants Full-time-level output (uncapped) regardless of the chosen tier,
+  // trial grants Full-time-level output ceilings regardless of the chosen tier,
   // while keeping the stored plan identity so billing/UI still show what they
   // hired. A plan-less Draft carries `subscriptionStatus: "trial"` by default (the
   // free Trial-shift funnel stage) and MUST stay on DRAFT_ENTITLEMENTS (capped) —

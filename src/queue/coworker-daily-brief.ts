@@ -103,7 +103,7 @@ export async function startCoworkerDailyBriefWorker() {
 async function fanOut() {
   const forDate = uaeYesterdayIso();
   const owners = await prisma.coworkerOwner.findMany({
-    where: { status: { in: ["pilot", "active"] } },
+    where: { status: "active" },
     select: { id: true, restaurantId: true },
     take: FANOUT_CAP,
   });
@@ -135,7 +135,7 @@ async function processSendJob(data: SendJobData) {
     },
   });
   if (!owner) return;
-  if (owner.status === "opted_out" || owner.status === "paused") return;
+  if (owner.status !== "active") return;
 
   const ownerFirstName =
     (owner.owner.fullName ?? owner.owner.email ?? "there").split(/\s+/)[0] || "there";

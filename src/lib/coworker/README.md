@@ -1,12 +1,12 @@
-# Coworker
+# Bustan on WhatsApp
 
-Sous Chef delivered to restaurant owners over WhatsApp, on Bustan's own WABA.
+Bustan delivered to restaurant owners over WhatsApp, on Bustan's own WABA.
 
 ## What this is
 
 A new **delivery surface**, not a new brain. The brain (OwnerWhisper +
 OwnerChatMessage + OwnerChatMemory + OWNER_TOOLS) already exists and powers
-the dashboard's Sous Chef dock. The Coworker reuses all of it and adds:
+the dashboard's Bustan dock. Bustan on WhatsApp reuses all of it and adds:
 
 1. A Bustan-owned WhatsApp Business Account (separate from the per-restaurant
    `WhatsAppIntegration` used for customer ordering).
@@ -14,12 +14,12 @@ the dashboard's Sous Chef dock. The Coworker reuses all of it and adds:
    (full + lite) × (English + Arabic).
 3. A daily fan-out cron that sends the appropriate Daily Brief to each
    enrolled owner.
-4. An inbound webhook that routes WhatsApp replies into the existing Sous
-   Chef LLM loop.
+4. An inbound webhook that routes WhatsApp replies into the existing Bustan
+   LLM loop.
 
 ## Architectural separation
 
-| | Coworker | Customer Ordering |
+| | Bustan on WhatsApp | Customer Ordering |
 |---|---|---|
 | Meta App | A separate Bustan app | The existing app (Tech Provider review pending) |
 | WABA | One — Bustan's (`COWORKER_WABA_ID`) | Many — each restaurant's, via Embedded Signup |
@@ -28,8 +28,8 @@ the dashboard's Sous Chef dock. The Coworker reuses all of it and adds:
 | Tech Provider approval needed? | **No** | Yes |
 
 These do NOT share code paths at the Meta layer. `lib/whatsapp-business.ts`
-is for ordering; `lib/coworker/meta-client.ts` is for the Coworker. The
-duplication is intentional — the auth model and failure modes diverge.
+is for ordering; `lib/coworker/meta-client.ts` is for Bustan on WhatsApp.
+The duplication is intentional — the auth model and failure modes diverge.
 
 ## Runtime gates (in order)
 
@@ -39,8 +39,10 @@ duplication is intentional — the auth model and failure modes diverge.
    `COWORKER_DRY_RUN_PHONE`. The recipient persisted on `CoworkerMessage`
    is the real owner, the actual recipient is the pilot phone. `dryRun=true`
    is set on the row so it's auditable.
-3. Per-owner `status` ∈ {`pilot`, `active`, `paused`, `opted_out`} — only
-   `pilot` and `active` receive the daily brief.
+3. Per-owner `status` ∈ {`pilot`, `active`, `paused`, `opted_out`}:
+   - `pilot` means the owner saved a number but has not proved control yet.
+   - `active` means the owner has messaged `VERIFY` or `START` from that phone.
+   - Only `active` owners receive daily briefs or can route replies into tools.
 
 ## Env vars
 
@@ -66,9 +68,10 @@ COWORKER_UTILITY_COST_USD=0.02         # for cost tracking
 5. From admin/coworker: **Sync library → DB**, then **Submit to Meta**.
 6. Wait 1–24h for template approvals; click **Sync status** to refresh.
 7. Enroll yourself from `/dashboard/coworker` for at least one restaurant.
-8. From admin/coworker: **Send brief now** for your enrolment — verify the
+8. Message `VERIFY` to `COWORKER_DISPLAY_PHONE` from the enrolled phone.
+9. From admin/coworker: **Send brief now** for your enrolment — verify the
    message lands on `COWORKER_DRY_RUN_PHONE`.
-9. When happy: flip `COWORKER_DRY_RUN=false`. The 04:00 UTC cron now lands
+10. When happy: flip `COWORKER_DRY_RUN=false`. The 04:00 UTC cron now lands
    briefs at 08:00 GST for every enrolled owner.
 
 ## To kill the feature

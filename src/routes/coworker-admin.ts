@@ -1,4 +1,4 @@
-// Admin Coworker routes — template management + pilot owner controls.
+// Admin Bustan on WhatsApp routes — template management + enrolled owner controls.
 // Mounted at /api/admin/coworker. requireAdmin gate.
 
 import { Hono } from "hono";
@@ -45,6 +45,7 @@ export const coworkerAdminRoute = new Hono<{
         wabaConfigured: Boolean(env.COWORKER_WABA_ID && env.COWORKER_ACCESS_TOKEN),
         phoneConfigured: Boolean(env.COWORKER_PHONE_NUMBER_ID),
         webhookConfigured: Boolean(env.COWORKER_WEBHOOK_VERIFY_TOKEN && env.COWORKER_APP_SECRET),
+        displayPhoneConfigured: Boolean(env.COWORKER_DISPLAY_PHONE),
         displayPhone: env.COWORKER_DISPLAY_PHONE ?? null,
         counts: { owners, templates, libraryDefinitions: COWORKER_TEMPLATE_LIBRARY.length },
       });
@@ -161,9 +162,17 @@ export const coworkerAdminRoute = new Hono<{
   .post("/send-now", requireAuth, requireAdmin, async (c) => {
     try {
       if (!env.COWORKER_ENABLED) {
-        throw new ApiError("Coworker disabled (COWORKER_ENABLED=false).", 503);
+        throw new ApiError("Bustan on WhatsApp disabled (COWORKER_ENABLED=false).", 503);
       }
       const data = sendNowSchema.parse(await c.req.json());
+      const owner = await prisma.coworkerOwner.findUnique({
+        where: { id: data.coworkerOwnerId },
+        select: { status: true },
+      });
+      if (!owner) throw new ApiError("Owner enrollment not found.", 404);
+      if (owner.status !== "active") {
+        throw new ApiError("Owner must verify their phone before briefs can be sent.", 409);
+      }
       await enqueueBriefSendNow(data);
       return c.json({ ok: true, queued: true });
     } catch (error) {

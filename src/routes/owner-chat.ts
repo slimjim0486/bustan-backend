@@ -717,7 +717,7 @@ export const ownerChatRoute = new Hono<{
       const restaurant = await loadOwnedRestaurant(restaurantId, auth.clerkId);
       const entitlements = getRestaurantEntitlements(restaurant);
 
-      // Entitlement gate: require Pro or Portfolio
+      // Entitlement gate: require a paid role
       if (!entitlements.menuAssistantEnabled) {
         throw new ApiError(
           OWNER_AGENT.unavailable,

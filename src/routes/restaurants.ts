@@ -557,7 +557,7 @@ export const restaurantsRoute = new Hono<{
         entitlements.plan === "portfolio";
 
       if (data.themeKey && premiumThemeKeys.has(data.themeKey) && !hasPremiumThemeAccess) {
-        throw new ApiError("Premium themes require a Pro or Portfolio plan", 403);
+        throw new ApiError("Premium themes require a paid role", 403);
       }
 
       if (data.isPublished) {

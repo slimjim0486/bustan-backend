@@ -509,7 +509,7 @@ export const crmRoute = new Hono<{
             // because ctwaClid (the natural choice) isn't exposed
             // to the response.
             const hasReferral = Boolean(c?.referralCapturedAt);
-            // P1: full payload only on Pro+. Starter sees a teaser flag
+            // P1: full payload only on paid roles. Starter sees a teaser flag
             // so we can render an upsell hint without leaking the ad
             // headline (which is the most upgrade-driving signal).
             const referral = hasReferral

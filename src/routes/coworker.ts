@@ -1,5 +1,5 @@
-// Owner-facing Coworker routes — opt-in/opt-out toggle for the WhatsApp
-// delivery surface. Mounted at /api/coworker.
+// Owner-facing Bustan on WhatsApp routes — opt-in/opt-out toggle for the
+// WhatsApp delivery surface. Mounted at /api/coworker.
 //
 // Auth: requireAuth + ownership check (clerkId must own restaurantId).
 // Side effects: create/update CoworkerOwner row. Does NOT submit templates or
@@ -36,6 +36,21 @@ const updateSchema = z.object({
     .optional(),
   status: z.enum(["pilot", "active", "paused"]).optional(),
 });
+
+function coworkerSetupStatus() {
+  const wabaConfigured = Boolean(env.COWORKER_WABA_ID && env.COWORKER_ACCESS_TOKEN);
+  const phoneConfigured = Boolean(env.COWORKER_PHONE_NUMBER_ID);
+  const webhookConfigured = Boolean(env.COWORKER_WEBHOOK_VERIFY_TOKEN && env.COWORKER_APP_SECRET);
+  const displayPhoneConfigured = Boolean(env.COWORKER_DISPLAY_PHONE);
+
+  return {
+    wabaConfigured,
+    phoneConfigured,
+    webhookConfigured,
+    displayPhoneConfigured,
+    liveReady: wabaConfigured && phoneConfigured && webhookConfigured && displayPhoneConfigured,
+  };
+}
 
 async function loadOwnedRestaurant(restaurantId: string, clerkId: string) {
   const r = await prisma.restaurant.findFirst({
@@ -75,6 +90,7 @@ export const coworkerRoute = new Hono<{
         enabled: env.COWORKER_ENABLED,
         dryRun: env.COWORKER_DRY_RUN,
         displayPhone: env.COWORKER_DISPLAY_PHONE ?? null,
+        setup: coworkerSetupStatus(),
         enrolment: row,
       });
     } catch (error) {
@@ -90,7 +106,13 @@ export const coworkerRoute = new Hono<{
 
       if (!env.COWORKER_ENABLED) {
         throw new ApiError(
-          "Coworker isn't enabled in this environment yet. Check back soon.",
+          "Bustan on WhatsApp isn't enabled in this environment yet. Check back soon.",
+          503
+        );
+      }
+      if (!coworkerSetupStatus().liveReady) {
+        throw new ApiError(
+          "Bustan on WhatsApp isn't fully configured yet. Check back soon.",
           503
         );
       }
@@ -144,6 +166,12 @@ export const coworkerRoute = new Hono<{
 
       const row = await prisma.coworkerOwner.findUnique({ where: { restaurantId } });
       if (!row) throw new ApiError("Not enrolled. Use POST /enroll first.", 404);
+      if (data.status === "paused" && row.status !== "active") {
+        throw new ApiError("Verify your phone before pausing Bustan on WhatsApp.", 409);
+      }
+      if (data.status === "active" && row.status !== "paused") {
+        throw new ApiError("Reply VERIFY from WhatsApp to activate this phone.", 409);
+      }
 
       const updated = await prisma.coworkerOwner.update({
         where: { id: row.id },

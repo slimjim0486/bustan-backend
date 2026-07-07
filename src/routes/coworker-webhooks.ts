@@ -1,4 +1,4 @@
-// Inbound webhook for the Bustan Coworker WhatsApp number. Separate from
+// Inbound webhook for the Bustan on WhatsApp number. Separate from
 // /api/webhooks/whatsapp (which handles per-restaurant ordering integrations).
 // Mounted at /api/webhooks/coworker.
 //
@@ -11,9 +11,10 @@
 //   2. Resolve CoworkerOwner by `from` E.164 — ignore unknown numbers
 //   3. Open 24h window
 //   4. Persist inbound row
-//   5. STOP/START → opt out / resume, send confirmation
-//   6. Button payload → routeButtonPayload → either canned reply or agent prompt
-//   7. Free text → runAgentTurn → send reply text
+//   5. VERIFY/START proves control of the enrolled phone and activates it
+//   6. STOP/START → pause / resume, send confirmation
+//   7. Button payload → routeButtonPayload → either canned reply or agent prompt
+//   8. Free text → runAgentTurn → send reply text
 //
 // Status webhooks (delivered/read/failed) update CoworkerMessage.
 
@@ -46,6 +47,11 @@ function getConsentCommand(body: string | null | undefined): "opt_in" | "opt_out
   if (["stop", "unsubscribe", "opt out", "opt-out", "cancel", "pause"].includes(n)) return "opt_out";
   if (["start", "resume", "subscribe", "opt in", "opt-in"].includes(n)) return "opt_in";
   return null;
+}
+
+function isVerificationCommand(body: string | null | undefined): boolean {
+  const n = body?.trim().toLowerCase();
+  return Boolean(n && ["verify", "verify bustan", "activate", "activate bustan"].includes(n));
 }
 
 export const coworkerWebhooksRoute = new Hono()
@@ -221,7 +227,38 @@ async function handleInboundMessage(input: {
     await sendCoworkerText({
       coworkerOwnerId: owner.id,
       restaurantId: owner.restaurantId,
-      body: "Welcome back ☀️ Your daily brief resumes tomorrow morning.",
+      body: "Verified. Bustan on WhatsApp is active for your restaurant. Your daily brief resumes tomorrow morning.",
+    });
+    return;
+  }
+
+  if (isVerificationCommand(body)) {
+    await prisma.coworkerOwner.update({
+      where: { id: owner.id },
+      data: { status: "active", pausedAt: null, optedOutAt: null },
+    });
+    await sendCoworkerText({
+      coworkerOwnerId: owner.id,
+      restaurantId: owner.restaurantId,
+      body: "Verified. Bustan on WhatsApp is active for your restaurant. You can now ask for numbers, drafts, menu edits, and next actions here.",
+    });
+    return;
+  }
+
+  if (owner.status === "pilot") {
+    await sendCoworkerText({
+      coworkerOwnerId: owner.id,
+      restaurantId: owner.restaurantId,
+      body: "To activate Bustan on WhatsApp for this restaurant, reply VERIFY from this phone.",
+    });
+    return;
+  }
+
+  if (owner.status === "paused" || owner.status === "opted_out") {
+    await sendCoworkerText({
+      coworkerOwnerId: owner.id,
+      restaurantId: owner.restaurantId,
+      body: "Bustan on WhatsApp is paused for this restaurant. Reply START when you want to resume.",
     });
     return;
   }

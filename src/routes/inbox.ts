@@ -1,7 +1,7 @@
 // Sous Chef inbox HTTP routes.
 //
 // Mounted at /api/inbox. All endpoints are owner-scoped (clerkId must own the
-// restaurant the draft belongs to) and tier-gated (Sous Chef requires Pro+).
+// restaurant the draft belongs to) and tier-gated (Sous Chef requires a paid role).
 // Mutations enqueue the draft-ship worker job rather than mutating target
 // entities directly — that work lives in shipDraft() inside
 // services/draft-actions.ts.
@@ -50,7 +50,7 @@ async function loadOwnedRestaurant(restaurantId: string, clerkId: string) {
   const entitlements = getRestaurantEntitlements(restaurant);
   if (!entitlements.menuAssistantEnabled) {
     throw new ApiError(
-      "Sous Chef is included in Pro and Portfolio plans. Upgrade in Billing to use the Inbox.",
+      "Sous Chef is included in paid roles. Upgrade in Billing to use the Inbox.",
       402
     );
   }
@@ -77,7 +77,7 @@ async function loadOwnedDraft(draftId: string, clerkId: string) {
   const entitlements = getRestaurantEntitlements(draft.restaurant);
   if (!entitlements.menuAssistantEnabled) {
     throw new ApiError(
-      "Sous Chef is included in Pro and Portfolio plans. Upgrade in Billing to act on this draft.",
+      "Sous Chef is included in paid roles. Upgrade in Billing to act on this draft.",
       402
     );
   }

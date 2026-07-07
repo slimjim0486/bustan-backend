@@ -1,5 +1,5 @@
 // Weekly Report job for Bustan. Generates an end-of-week management review for
-// every active Pro+ restaurant every Monday. Cron: 03:00 UTC Monday = 07:00 GST.
+// every active paid-role restaurant every Monday. Cron: 03:00 UTC Monday = 07:00 GST.
 // Mirrors owner-whisper.ts.
 
 import Anthropic from "@anthropic-ai/sdk";

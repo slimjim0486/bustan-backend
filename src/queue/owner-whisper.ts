@@ -1,5 +1,5 @@
 // Daily Owner's Whisper job for Sous Chef.
-// Generates a 5-line morning briefing for every active Pro+ restaurant.
+// Generates a 5-line morning briefing for every active paid-role restaurant.
 // Cron: 03:00 UTC = 07:00 GST. Mirrors ad-studio-jobs.ts pattern.
 
 import Anthropic from "@anthropic-ai/sdk";
