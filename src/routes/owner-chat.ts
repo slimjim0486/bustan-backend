@@ -683,7 +683,12 @@ export const ownerChatRoute = new Hono<{
                   restaurantId,
                   auth.clerkId,
                   entitlements,
-                  block.input as Record<string, unknown>
+                  block.input as Record<string, unknown>,
+                  // Stamp the channel + a per-tool-call idempotency scope (the
+                  // Anthropic tool_use id) so createDraft dedupes a replayed
+                  // turn — critical now that guarded_auto auto-ships without a
+                  // human approval step to catch a double invocation.
+                  { channel: "dashboard_chat", idempotencyScope: block.id }
                 );
 
                 if (result.preview) {
