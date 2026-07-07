@@ -25,6 +25,13 @@ import { getOwnerTools, executeTool } from "@/services/owner-chat-tools";
 import { enqueueExtractionForRestaurant } from "@/queue/owner-chat-memory";
 import { enqueueWhisperForRestaurant } from "@/queue/owner-whisper";
 import { enqueueWeeklyReportForRestaurant } from "@/queue/weekly-report";
+import { enqueueProactiveNudge } from "@/queue/proactive-nudge";
+import {
+  getMomentById,
+  getNextMomentForCountry,
+  resolveUpcomingMomentOccurrence,
+} from "@/services/ad-studio/calendar";
+import { inferCountryFromLocation } from "@/services/ad-studio/event-stager";
 
 // ── Schema ─────────────────────────────────────────────────────
 
@@ -43,6 +50,38 @@ const ownerChatSchema = z.object({
 });
 
 const THREAD_HISTORY_LIMIT = 30;
+
+function daysUntilLocalIso(fromIso: string): number {
+  const today = new Date();
+  const start = new Date(`${today.toISOString().slice(0, 10)}T00:00:00Z`);
+  const target = new Date(`${fromIso}T00:00:00Z`);
+  return Math.max(0, Math.ceil((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
+}
+
+function serializeNudgePayload(nudge: {
+  id: string;
+  momentId: string;
+  momentYear: number;
+  adProjectId: string | null;
+  narrative: string;
+  actionsJson: unknown;
+}) {
+  const moment = getMomentById(nudge.momentId);
+  const occurrence = moment?.dates.find((d) => d.year === nudge.momentYear);
+  return {
+    id: nudge.id,
+    momentId: nudge.momentId,
+    momentYear: nudge.momentYear,
+    momentName: moment?.name ?? nudge.momentId,
+    kind: moment?.kind ?? "calendar",
+    daysOut: occurrence ? daysUntilLocalIso(occurrence.from) : null,
+    from: occurrence?.from ?? null,
+    to: occurrence?.to ?? null,
+    adProjectId: nudge.adProjectId,
+    narrative: nudge.narrative,
+    actions: Array.isArray(nudge.actionsJson) ? nudge.actionsJson : [],
+  };
+}
 
 // ── Anthropic client ───────────────────────────────────────────
 
@@ -234,6 +273,7 @@ export const ownerChatRoute = new Hono<{
           source: true,
           whisperId: true,
           weeklyReportId: true,
+          nudgeId: true,
           draftId: true,
           model: true,
           createdAt: true,
@@ -250,12 +290,33 @@ export const ownerChatRoute = new Hono<{
           })
         : [];
       const weeklyById = new Map(weeklyReports.map((w) => [w.id, w]));
+      const nudgeIds = rows
+        .filter((m) => m.source === "event_nudge" && m.nudgeId)
+        .map((m) => m.nudgeId as string);
+      const nudges = nudgeIds.length
+        ? await prisma.proactiveNudge.findMany({
+            where: { id: { in: nudgeIds }, restaurantId },
+            select: {
+              id: true,
+              momentId: true,
+              momentYear: true,
+              adProjectId: true,
+              narrative: true,
+              actionsJson: true,
+            },
+          })
+        : [];
+      const nudgeById = new Map(nudges.map((n) => [n.id, n]));
 
       return c.json({
         messages: rows.reverse().map((m) => {
           const weekly =
             m.source === "weekly_report" && m.weeklyReportId
               ? weeklyById.get(m.weeklyReportId)
+              : undefined;
+          const nudge =
+            m.source === "event_nudge" && m.nudgeId
+              ? nudgeById.get(m.nudgeId)
               : undefined;
           return {
             id: m.id,
@@ -264,6 +325,7 @@ export const ownerChatRoute = new Hono<{
             source: m.source,
             whisperId: m.whisperId,
             weeklyReportId: m.weeklyReportId,
+            nudgeId: m.nudgeId,
             draftId: m.draftId,
             model: m.model,
             createdAt: m.createdAt.toISOString(),
@@ -273,6 +335,7 @@ export const ownerChatRoute = new Hono<{
                   actions: (weekly.actionsJson as unknown[]) ?? [],
                 }
               : null,
+            eventNudge: nudge ? serializeNudgePayload(nudge) : null,
           };
         }),
       });
@@ -402,6 +465,21 @@ export const ownerChatRoute = new Hono<{
         select: { id: true, status: true, generatedAt: true, weekStart: true },
       });
 
+      const latestNudge = await prisma.proactiveNudge.findFirst({
+        where: { restaurantId },
+        orderBy: { generatedAt: "desc" },
+        select: {
+          id: true,
+          status: true,
+          generatedAt: true,
+          momentId: true,
+          momentYear: true,
+          adProjectId: true,
+          narrative: true,
+          actionsJson: true,
+        },
+      });
+
       return c.json({
         hasUnreadWhisper: latest?.status === "unread",
         latestWhisper: latest
@@ -420,6 +498,14 @@ export const ownerChatRoute = new Hono<{
               status: latestWeekly.status,
               generatedAt: latestWeekly.generatedAt.toISOString(),
               weekStart: latestWeekly.weekStart.toISOString().slice(0, 10),
+            }
+          : null,
+        hasUnreadNudge: latestNudge?.status === "unread",
+        latestNudge: latestNudge
+          ? {
+              ...serializeNudgePayload(latestNudge),
+              status: latestNudge.status,
+              generatedAt: latestNudge.generatedAt.toISOString(),
             }
           : null,
       });
@@ -475,6 +561,29 @@ export const ownerChatRoute = new Hono<{
       return errorResponse(c, error);
     }
   })
+  // ── PATCH /:restaurantId/nudge/:nudgeId/read — mark an event nudge read/dismissed
+  .patch("/:restaurantId/nudge/:nudgeId/read", requireAuth, async (c) => {
+    try {
+      const auth = c.get("auth");
+      const restaurantId = c.req.param("restaurantId");
+      const nudgeId = c.req.param("nudgeId");
+      assertOwnerChatEndpointRateLimit({
+        action: "nudge-read",
+        clerkId: auth.clerkId,
+        restaurantId,
+        userLimit: 120,
+        restaurantLimit: 120,
+      });
+      await loadOwnedRestaurant(restaurantId, auth.clerkId);
+      await prisma.proactiveNudge.updateMany({
+        where: { id: nudgeId, restaurantId, status: "unread" },
+        data: { status: "read", readAt: new Date() },
+      });
+      return c.json({ ok: true });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
   // ── POST /:restaurantId/weekly-report/test — manual enqueue for smoke testing
   .post("/:restaurantId/weekly-report/test", requireAuth, async (c) => {
     try {
@@ -493,6 +602,60 @@ export const ownerChatRoute = new Hono<{
       });
       await enqueueWeeklyReportForRestaurant(restaurantId);
       return c.json({ ok: true, queued: true });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  // ── POST /:restaurantId/nudge/test — manual enqueue for smoke testing
+  .post("/:restaurantId/nudge/test", requireAuth, async (c) => {
+    try {
+      const auth = c.get("auth");
+      const restaurantId = c.req.param("restaurantId");
+      const body = (await c.req.json().catch(() => ({}))) as { momentId?: string };
+      const restaurant = await loadOwnedRestaurant(restaurantId, auth.clerkId);
+      assertRateLimit({
+        key: `owner-chat:nudge-generate:restaurant:${restaurantId}`,
+        limit: 2,
+        windowMs: 60 * 60_000,
+      });
+      assertRateLimit({
+        key: `owner-chat:nudge-generate:user:${auth.clerkId}`,
+        limit: 4,
+        windowMs: 60 * 60_000,
+      });
+
+      const country = inferCountryFromLocation(restaurant.location);
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const requestedMoment = body.momentId ? getMomentById(body.momentId) : null;
+      if (body.momentId && (!requestedMoment || !requestedMoment.countries.includes(country))) {
+        throw new ApiError("Requested moment is not available for this restaurant country", 400);
+      }
+      const nextCountryMoment = getNextMomentForCountry(country, todayIso);
+      const chosenMoment = requestedMoment ?? nextCountryMoment;
+      const chosen = chosenMoment
+        ? resolveUpcomingMomentOccurrence(chosenMoment.id, todayIso)
+        : null;
+      if (!chosen) {
+        throw new ApiError("No upcoming calendar moment found for nudge test", 404);
+      }
+
+      const existingProject = await prisma.adProject.findFirst({
+        where: {
+          restaurantId,
+          sourceMomentId: chosen.moment.id,
+          sourceMomentYear: chosen.year,
+        },
+        orderBy: { sourceMomentStagedAt: "desc" },
+        select: { id: true },
+      });
+
+      await enqueueProactiveNudge({
+        restaurantId,
+        momentId: chosen.moment.id,
+        momentYear: chosen.year,
+        adProjectId: existingProject?.id ?? null,
+      });
+      return c.json({ ok: true, queued: true, momentId: chosen.moment.id, momentYear: chosen.year });
     } catch (error) {
       return errorResponse(c, error);
     }

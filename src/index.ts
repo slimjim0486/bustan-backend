@@ -19,6 +19,7 @@ import { startOrderIntentExpiryWorker } from "@/queue/order-intent-expiry";
 import { startOwnerChatMemoryWorker } from "@/queue/owner-chat-memory";
 import { startOwnerWhisperWorker } from "@/queue/owner-whisper";
 import { startWeeklyReportWorker } from "@/queue/weekly-report";
+import { startProactiveNudgeWorker } from "@/queue/proactive-nudge";
 import { startGscSyncWorker } from "@/queue/gsc-sync";
 import { startSabtPackWorker } from "@/queue/sabt-pack";
 import { startEventStagerWorker } from "@/queue/event-stager";
@@ -191,6 +192,14 @@ startWeeklyReportWorker()
   })
   .catch((error) => {
     console.error("pg-boss weekly-report worker failed to start", error);
+  });
+
+startProactiveNudgeWorker()
+  .then(() => {
+    console.log("pg-boss proactive-nudge worker started");
+  })
+  .catch((error) => {
+    console.error("pg-boss proactive-nudge worker failed to start", error);
   });
 
 startGscSyncWorker()

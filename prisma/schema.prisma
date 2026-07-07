@@ -360,6 +360,7 @@ model Restaurant {
   ownerChatMemories         OwnerChatMemory[]
   ownerWhispers             OwnerWhisper[]
   weeklyReports             WeeklyReport[]
+  proactiveNudges           ProactiveNudge[]
   gscSnapshots              GscSnapshot[]
   supportTickets            SupportTicket[]
   supportMessages           SupportTicketMessage[]
@@ -1760,16 +1761,19 @@ model OwnerChatMessage {
   model          String? // Anthropic model id that authored an assistant message; null for user/system rows and pre-routing history
   whisperId      String?  @map("whisper_id") // optional link back to OwnerWhisper
   weeklyReportId String?  @map("weekly_report_id") // optional link back to WeeklyReport
+  nudgeId        String?  @map("nudge_id") // optional link back to ProactiveNudge
   draftId        String?  @map("draft_id") // draft created in this assistant turn (C1 M2 hydration)
   createdAt      DateTime @default(now()) @map("created_at")
 
-  restaurant   Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  whisper      OwnerWhisper? @relation(fields: [whisperId], references: [id], onDelete: SetNull)
-  weeklyReport WeeklyReport? @relation(fields: [weeklyReportId], references: [id], onDelete: SetNull)
+  restaurant   Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  whisper      OwnerWhisper?   @relation(fields: [whisperId], references: [id], onDelete: SetNull)
+  weeklyReport WeeklyReport?   @relation(fields: [weeklyReportId], references: [id], onDelete: SetNull)
+  nudge        ProactiveNudge? @relation(fields: [nudgeId], references: [id], onDelete: SetNull)
 
   @@index([restaurantId, createdAt])
   @@index([whisperId])
   @@index([weeklyReportId])
+  @@index([nudgeId])
   @@map("owner_chat_messages")
 }
 
@@ -1830,6 +1834,27 @@ model WeeklyReport {
   @@unique([restaurantId, weekStart])
   @@index([restaurantId, generatedAt])
   @@map("weekly_reports")
+}
+
+model ProactiveNudge {
+  id           String    @id @default(cuid())
+  restaurantId String    @map("restaurant_id")
+  momentId     String    @map("moment_id")
+  momentYear   Int       @map("moment_year")
+  adProjectId  String?   @map("ad_project_id")
+  narrative    String    @db.Text
+  actionsJson  Json      @map("actions_json")
+  status       String    @default("unread") // "unread" | "read" | "dismissed"
+  readAt       DateTime? @map("read_at")
+  generatedAt  DateTime  @default(now()) @map("generated_at")
+  costUsd      Float     @default(0) @map("cost_usd")
+
+  restaurant Restaurant         @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  messages   OwnerChatMessage[]
+
+  @@unique([restaurantId, momentId, momentYear])
+  @@index([restaurantId, generatedAt])
+  @@map("proactive_nudges")
 }
 
 // =============================================================================

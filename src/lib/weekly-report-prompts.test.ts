@@ -31,8 +31,11 @@ test("computeWeeklyTiles builds four tiles with direction", () => {
 });
 
 import {
+  buildEventNudgePrompt,
   buildWeeklyReportPrompt,
+  parseEventNudgeResponse,
   parseWeeklyReportResponse,
+  type EventNudgeSnapshot,
   type WeeklyReportSnapshot,
 } from "@/lib/owner-chat-prompts";
 
@@ -94,4 +97,48 @@ test("parseWeeklyReportResponse tolerates a fenced code block and returns null o
   const fenced = "```json\n" + JSON.stringify({ narrative: "hi", actions: [] }) + "\n```";
   assert.equal(parseWeeklyReportResponse(fenced)?.narrative, "hi");
   assert.equal(parseWeeklyReportResponse("not json at all"), null);
+});
+
+const NUDGE_SNAP: EventNudgeSnapshot = {
+  restaurantName: "Zaytoun",
+  adProjectId: "ad_123",
+  moment: {
+    id: "uae_national_day",
+    name: "UAE National Day",
+    kind: "national_day",
+    year: 2026,
+    from: "2026-12-02",
+    to: "2026-12-03",
+    daysOut: 21,
+    spendPulse: "burst",
+    creativeAngles: ["Limited-edition Emirati-fusion dish"],
+    doList: ["Arabic-first copy"],
+    doNotList: ["Generic flag spam"],
+  },
+};
+
+test("buildEventNudgePrompt grounds the nudge in the staged campaign and calendar facts", () => {
+  const prompt = buildEventNudgePrompt(NUDGE_SNAP, []);
+  assert.match(prompt, /PROACTIVE EVENT NUDGE/);
+  assert.match(prompt, /UAE National Day/);
+  assert.match(prompt, /ad_123/);
+  assert.match(prompt, /already-staged campaign/);
+});
+
+test("parseEventNudgeResponse requires at least one valid clamped action", () => {
+  const raw = JSON.stringify({
+    narrative: "National Day is coming up, and I have the brief ready.",
+    actions: [
+      { label: "Build campaign", seedPrompt: "Build out the National Day campaign you drafted", kind: "ads" },
+      { label: "Bad", seedPrompt: "Do a weird thing", kind: "calendar" },
+      { label: "Menu prep", seedPrompt: "Suggest a National Day menu special", kind: "menu" },
+      { label: "Inbox", seedPrompt: "Draft replies for National Day enquiries", kind: "inbox" },
+      { label: "Extra", seedPrompt: "extra", kind: "promo" },
+    ],
+  });
+  const parsed = parseEventNudgeResponse(raw);
+  assert.ok(parsed);
+  assert.equal(parsed?.actions.length, 3);
+  assert.deepEqual(parsed?.actions.map((a) => a.kind), ["ads", "menu", "inbox"]);
+  assert.equal(parseEventNudgeResponse(JSON.stringify({ narrative: "hi", actions: [] })), null);
 });

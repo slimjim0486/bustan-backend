@@ -21,6 +21,7 @@ import type { Prisma } from "@prisma/client";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
 import { getBoss } from "@/queue/image-generation";
+import { enqueueProactiveNudge } from "@/queue/proactive-nudge";
 import { sendLifecycleEmail } from "@/services/email";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { campaignArchetypes } from "@/services/ad-studio/campaigns";
@@ -200,6 +201,17 @@ async function processRunJob(restaurantId: string) {
         fromDate: planned.fromDate,
         prepDeadline: planned.prepDeadline,
       });
+      try {
+        await enqueueProactiveNudge({
+          restaurantId,
+          momentId: planned.moment.id,
+          momentYear: planned.year,
+          adProjectId: projectId,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[event-stager] proactive nudge enqueue failed for ${projectId}: ${message}`);
+      }
     }
   }
 

@@ -33,3 +33,10 @@ test("owner_chat_weekly is priced at haiku rates", () => {
     Math.abs(estimateAiUsageCost("owner_chat_weekly", 1_000_000, 1_000_000) - 6.0) < 1e-9
   );
 });
+
+test("owner_chat_nudge is priced at haiku rates", () => {
+  // 1M in + 1M out: haiku = 1.0 + 5.0 USD
+  assert.ok(
+    Math.abs(estimateAiUsageCost("owner_chat_nudge", 1_000_000, 1_000_000) - 6.0) < 1e-9
+  );
+});

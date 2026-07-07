@@ -12,6 +12,7 @@ export type AiFeature =
   | "owner_chat_extraction"
   | "owner_chat_whisper"
   | "owner_chat_weekly"
+  | "owner_chat_nudge"
   | "seo_analysis"
   | "ad_studio_project"
   | "sous_chef_message"
@@ -38,6 +39,7 @@ function getTokenPricing(feature: AiFeature) {
     case "owner_chat_extraction":
     case "owner_chat_whisper":
     case "owner_chat_weekly":
+    case "owner_chat_nudge":
     case "sous_chef_message":
     case "competitor_intel_digest":
     case "arabic_translate":
