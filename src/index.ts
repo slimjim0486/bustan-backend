@@ -18,6 +18,7 @@ import { startWhatsAppRetentionWorker } from "@/queue/whatsapp-retention";
 import { startOrderIntentExpiryWorker } from "@/queue/order-intent-expiry";
 import { startOwnerChatMemoryWorker } from "@/queue/owner-chat-memory";
 import { startOwnerWhisperWorker } from "@/queue/owner-whisper";
+import { startWeeklyReportWorker } from "@/queue/weekly-report";
 import { startGscSyncWorker } from "@/queue/gsc-sync";
 import { startSabtPackWorker } from "@/queue/sabt-pack";
 import { startEventStagerWorker } from "@/queue/event-stager";
@@ -182,6 +183,14 @@ startOwnerWhisperWorker()
   })
   .catch((error) => {
     console.error("pg-boss owner-whisper worker failed to start", error);
+  });
+
+startWeeklyReportWorker()
+  .then(() => {
+    console.log("pg-boss weekly-report worker started");
+  })
+  .catch((error) => {
+    console.error("pg-boss weekly-report worker failed to start", error);
   });
 
 startGscSyncWorker()
