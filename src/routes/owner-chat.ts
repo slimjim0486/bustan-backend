@@ -50,6 +50,28 @@ const ownerChatSchema = z.object({
 });
 
 const THREAD_HISTORY_LIMIT = 30;
+const OWNER_CHAT_TURN_STALE_MS = 10 * 60_000;
+const activeOwnerChatTurns = new Map<string, number>();
+
+function acquireOwnerChatTurn(restaurantId: string) {
+  const now = Date.now();
+  const activeSince = activeOwnerChatTurns.get(restaurantId);
+
+  if (activeSince && now - activeSince < OWNER_CHAT_TURN_STALE_MS) {
+    throw new ApiError(
+      "Bustan is already working on your previous message. Stop it or wait for it to finish before sending another.",
+      409
+    );
+  }
+
+  activeOwnerChatTurns.set(restaurantId, now);
+
+  return () => {
+    if (activeOwnerChatTurns.get(restaurantId) === now) {
+      activeOwnerChatTurns.delete(restaurantId);
+    }
+  };
+}
 
 function daysUntilLocalIso(fromIso: string): number {
   const today = new Date();
@@ -836,6 +858,7 @@ export const ownerChatRoute = new Hono<{
       // Frozen baseline for planner re-runs — loops mutate their own copy.
       const baseMessages = [...messages];
 
+      const releaseOwnerChatTurn = acquireOwnerChatTurn(restaurantId);
       let closed = false;
 
       const stream = new ReadableStream({
@@ -1191,6 +1214,8 @@ export const ownerChatRoute = new Hono<{
                 console.error("Failed to log owner chat usage:", err);
               }
             }
+
+            releaseOwnerChatTurn();
 
             if (!closed) {
               try {
