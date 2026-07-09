@@ -17,6 +17,7 @@ import {
   assertRateLimit,
   getClientIp,
 } from "@/lib/public-request-guards";
+import { runConciergeTurn } from "@/lib/concierge";
 import { createSousChefMessage } from "@/services/anthropic-models";
 import {
   type BustanKbTopic,
@@ -681,95 +682,21 @@ export const chatRoute = new Hono().post("/:restaurantId", async (c) => {
       );
     }
 
-    // Build the initial messages array
-    // Layer 3: Wrap user messages in delimiters so Claude treats them as
-    // untrusted diner input, not system instructions.
-    const wrapUserMessage = (text: string) =>
-      `<diner_message>${text}</diner_message>`;
-
-    const messages: Anthropic.MessageParam[] = [
-      ...data.history.map((msg) => ({
-        role: msg.role as "user" | "assistant",
-        content:
-          msg.role === "user" ? wrapUserMessage(msg.content) : msg.content,
-      })),
-      { role: "user" as const, content: wrapUserMessage(data.message) },
-    ];
-
-    const systemPrompt = buildSystemPrompt(restaurant);
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-
-    // Tool use loop — Claude may call tools, we execute them and feed results back
-    let iterations = 0;
-    let finalText = "";
-
-    while (iterations <= MAX_TOOL_ITERATIONS) {
-      const response = await createSousChefMessage(getClient(), {
-        max_tokens: 512,
-        system: systemPrompt,
-        tools: TOOLS,
-        messages,
-      }, {
-        route: "public-chat",
-        restaurantId,
-        iteration: iterations,
-      });
-      totalInputTokens += response.usage.input_tokens;
-      totalOutputTokens += response.usage.output_tokens;
-
-      // Extract any text from this response
-      const textParts = response.content
-        .filter((block): block is Anthropic.TextBlock => block.type === "text")
-        .map((block) => block.text.trim())
-        .filter(Boolean);
-
-      if (textParts.length > 0) {
-        finalText = textParts.join("\n").trim();
-      }
-
-      // If the model is done (no more tool calls), break
-      if (response.stop_reason === "end_turn" || response.stop_reason === "max_tokens") {
-        break;
-      }
-
-      // Extract tool_use blocks
-      const toolUseBlocks = response.content.filter(
-        (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
-      );
-
-      if (toolUseBlocks.length === 0) {
-        break;
-      }
-
-      // Add the assistant's full response (text + tool_use blocks) to the conversation
-      messages.push({ role: "assistant", content: response.content });
-
-      // Execute each tool and build tool_result blocks
-      const toolResults: Anthropic.ToolResultBlockParam[] = toolUseBlocks.map((block) => ({
-        type: "tool_result" as const,
-        tool_use_id: block.id,
-        content: executeTool(restaurant, block.name, block.input),
-      }));
-
-      // Add tool results as a user message
-      messages.push({ role: "user", content: toolResults });
-
-      iterations++;
-    }
-
-    if (!finalText) {
-      throw new ApiError("AI assistant returned an empty reply", 502);
-    }
+    const turn = await runConciergeTurn({
+      restaurant,
+      channel: "web",
+      message: data.message,
+      history: data.history,
+    });
 
     await logAiUsage(
       restaurantId,
       "sous_chef_message",
-      totalInputTokens,
-      totalOutputTokens
+      turn.inputTokens,
+      turn.outputTokens
     );
 
-    return c.json({ reply: finalText });
+    return c.json({ reply: turn.reply });
   } catch (error) {
     return errorResponse(c, error);
   }

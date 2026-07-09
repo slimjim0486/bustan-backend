@@ -36,6 +36,7 @@ import {
   renderNumberedTemplateBody,
 } from "@/services/campaign-send";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
+import { getConciergeMonthlyCap, getConciergeUsageState } from "@/lib/concierge/usage";
 import { requireAuth } from "@/middleware/auth";
 
 // Re-exported so existing consumers (and tests) can keep importing it from
@@ -116,6 +117,14 @@ const templateSubmitSchema = z.object({
   name: z.string().trim().min(2).max(80),
 });
 
+const dinerAutoReplySchema = z.object({
+  enabled: z.boolean(),
+});
+
+const conversationBotToggleSchema = z.object({
+  disabled: z.boolean(),
+});
+
 async function getOwnedRestaurant(restaurantId: string, clerkId: string) {
   // P1 — also pull subscription + operatorAccount so the GET handler can
   // compute entitlements without a second restaurant fetch. The other
@@ -151,6 +160,31 @@ function toNumber(value: { toString(): string } | number | null | undefined) {
 
 function isWithinCustomerServiceWindow(value: Date | null | undefined) {
   return Boolean(value && Date.now() - value.getTime() <= 24 * 60 * 60 * 1000);
+}
+
+function buildBotState(conversation: {
+  botDisabled: boolean;
+  botPausedUntil: Date | null;
+  botPausedReason: string | null;
+}) {
+  const paused =
+    conversation.botPausedUntil && conversation.botPausedUntil.getTime() > Date.now();
+  if (conversation.botDisabled) {
+    return { status: "off" as const, label: "Off", reason: "owner_toggle", pausedUntil: null };
+  }
+  if (paused) {
+    const label =
+      conversation.botPausedReason === "owner_reply"
+        ? "Paused - you replied"
+        : "Paused - needs human";
+    return {
+      status: "paused" as const,
+      label,
+      reason: conversation.botPausedReason,
+      pausedUntil: conversation.botPausedUntil,
+    };
+  }
+  return { status: "active" as const, label: "Bot active", reason: null, pausedUntil: null };
 }
 
 function buildTemplateLibrary(records: Array<{
@@ -270,6 +304,7 @@ export const crmRoute = new Hono<{
         integration,
         templateRecords,
         conversations,
+        escalationCount,
       ] = await Promise.all([
         prisma.customer.count({ where: { restaurantId } }),
         // Opted-in count must use the SAME eligibility rule as the campaign
@@ -428,7 +463,18 @@ export const crmRoute = new Hono<{
             },
           },
         }),
+        prisma.whatsAppConversation.count({
+          where: {
+            restaurantId,
+            unreadCount: { gt: 0 },
+            botPausedReason: { in: ["agent_escalated", "diner_request"] },
+            botPausedUntil: { gt: new Date() },
+          },
+        }),
       ]);
+
+      const conciergeCap = getConciergeMonthlyCap(ownedRestaurant);
+      const conciergeUsage = await getConciergeUsageState(restaurantId, conciergeCap);
 
       return c.json({
         stats: {
@@ -500,6 +546,17 @@ export const crmRoute = new Hono<{
         whatsapp: {
           embeddedSignup: getEmbeddedSignupConfig(),
           integration,
+          dinerAutoReplyEnabled: ownedRestaurant.dinerAutoReplyEnabled,
+          concierge: {
+            month: conciergeUsage.month,
+            repliesSent: conciergeUsage.repliesSent,
+            cap: conciergeUsage.cap,
+            remaining: conciergeUsage.remaining,
+            warning: conciergeUsage.warning,
+            capReached: !conciergeUsage.allowed,
+            escalationsAwaitingHuman: escalationCount,
+            failures: 0,
+          },
           templates: buildTemplateLibrary(templateRecords),
           transactionalTemplates: buildTransactionalTemplateLibrary(templateRecords),
           conversations: conversations.map((conversation) => {
@@ -533,6 +590,10 @@ export const crmRoute = new Hono<{
               customerName: conversation.customerName,
               lastMessageAt: conversation.lastMessageAt,
               unreadCount: conversation.unreadCount,
+              botDisabled: conversation.botDisabled,
+              botPausedUntil: conversation.botPausedUntil,
+              botPausedReason: conversation.botPausedReason,
+              botState: buildBotState(conversation),
               referral,
               latestMessage: conversation.messages[0]
                 ? {
@@ -540,6 +601,7 @@ export const crmRoute = new Hono<{
                     direction: conversation.messages[0].direction,
                     type: conversation.messages[0].type,
                     status: conversation.messages[0].status,
+                    source: conversation.messages[0].source,
                     body: conversation.messages[0].body,
                     createdAt: conversation.messages[0].createdAt,
                   }
@@ -552,6 +614,7 @@ export const crmRoute = new Hono<{
                   direction: message.direction,
                   type: message.type,
                   status: message.status,
+                  source: message.source,
                   body: message.body,
                   providerMessageId: message.providerMessageId,
                   sentAt: message.sentAt,
@@ -1037,9 +1100,37 @@ export const crmRoute = new Hono<{
           customerName: conversation.customerName,
           lastMessageAt: conversation.lastMessageAt,
           unreadCount: conversation.unreadCount,
+          botDisabled: conversation.botDisabled,
+          botPausedUntil: conversation.botPausedUntil,
+          botPausedReason: conversation.botPausedReason,
+          botState: buildBotState(conversation),
           latestMessageBody: conversation.messages[0]?.body ?? null,
+          latestMessageSource: conversation.messages[0]?.source ?? null,
         })),
       });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  .patch("/:restaurantId/settings/diner-auto-reply", requireAuth, async (c) => {
+    try {
+      const restaurantId = c.req.param("restaurantId");
+      const auth = c.get("auth");
+      await getOwnedRestaurant(restaurantId, auth.clerkId);
+      const data = dinerAutoReplySchema.parse(await c.req.json());
+
+      const restaurant = await prisma.restaurant.update({
+        where: { id: restaurantId },
+        data: {
+          dinerAutoReplyEnabled: data.enabled,
+        },
+        select: {
+          id: true,
+          dinerAutoReplyEnabled: true,
+        },
+      });
+
+      return c.json({ restaurant });
     } catch (error) {
       return errorResponse(c, error);
     }
@@ -1177,6 +1268,7 @@ export const crmRoute = new Hono<{
             direction: "outbound",
             type,
             status: "sent",
+            source: "owner",
             fromPhone: integration.displayPhoneNumber,
             toPhone: conversation.customerPhone,
             body,
@@ -1190,6 +1282,8 @@ export const crmRoute = new Hono<{
           },
           data: {
             lastMessageAt: sentAt,
+            botPausedUntil: new Date(sentAt.getTime() + 24 * 60 * 60 * 1000),
+            botPausedReason: "owner_reply",
           },
         });
 
@@ -1197,6 +1291,50 @@ export const crmRoute = new Hono<{
       });
 
       return c.json({ message }, 201);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  .patch("/:restaurantId/conversations/:conversationId/bot", requireAuth, async (c) => {
+    try {
+      const restaurantId = c.req.param("restaurantId");
+      const conversationId = c.req.param("conversationId");
+      const auth = c.get("auth");
+      await getOwnedRestaurant(restaurantId, auth.clerkId);
+      const data = conversationBotToggleSchema.parse(await c.req.json());
+
+      const conversation = await prisma.whatsAppConversation.findFirst({
+        where: {
+          id: conversationId,
+          restaurantId,
+        },
+      });
+
+      if (!conversation) {
+        throw new ApiError("Conversation not found", 404);
+      }
+
+      const updated = await prisma.whatsAppConversation.update({
+        where: { id: conversation.id },
+        data: data.disabled
+          ? {
+              botDisabled: true,
+              botPausedReason: "owner_toggle",
+            }
+          : {
+              botDisabled: false,
+              botPausedUntil: null,
+              botPausedReason: null,
+            },
+        select: {
+          id: true,
+          botDisabled: true,
+          botPausedUntil: true,
+          botPausedReason: true,
+        },
+      });
+
+      return c.json({ conversation: { ...updated, botState: buildBotState(updated) } });
     } catch (error) {
       return errorResponse(c, error);
     }

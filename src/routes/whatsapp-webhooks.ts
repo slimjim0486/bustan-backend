@@ -12,8 +12,11 @@ import {
 } from "@/lib/whatsapp-business";
 import { prisma } from "@/lib/prisma";
 import { detectLanguage } from "@/lib/language-detect";
+import { captureException } from "@/lib/sentry";
 import { extractCtwaReferral } from "@/lib/ctwa-referral";
 import { resolveAdProjectByMetaAdId } from "@/lib/ctwa-resolver";
+import { getConciergeMonthlyCap, getConciergeUsageState } from "@/lib/concierge/usage";
+import { enqueueDinerConciergeReply } from "@/queue/diner-concierge";
 import {
   detectOrderAction,
   findOldestPendingOrderForRestaurant,
@@ -129,7 +132,7 @@ async function handleInboundMessage(input: {
       )
     : null;
 
-  await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     const customer = await tx.customer.upsert({
       where: {
         restaurantId_normalizedPhone: {
@@ -248,10 +251,12 @@ async function handleInboundMessage(input: {
       },
       select: {
         id: true,
+        botPausedUntil: true,
+        botDisabled: true,
       },
     });
 
-    await tx.whatsAppMessage.upsert({
+    const message = await tx.whatsAppMessage.upsert({
       where: {
         providerMessageId: String(input.message.id),
       },
@@ -264,6 +269,7 @@ async function handleInboundMessage(input: {
         direction: "inbound",
         type: mapWebhookMessageType(input.message.type),
         status: "received",
+        source: "diner",
         fromPhone,
         toPhone: normalizeWhatsAppPhone(input.integration.displayPhoneNumber),
         body,
@@ -276,8 +282,72 @@ async function handleInboundMessage(input: {
         body,
         rawPayload: input.message,
       },
+      select: {
+        id: true,
+        type: true,
+        createdAt: true,
+      },
     });
+
+    return {
+      conversationId: conversation.id,
+      botPausedUntil: conversation.botPausedUntil,
+      botDisabled: conversation.botDisabled,
+      messageId: message.id,
+      messageType: message.type,
+      occurredAt: message.createdAt,
+      language: detectedLanguage,
+    };
   });
+}
+
+async function maybeEnqueueDinerConcierge(input: {
+  restaurant: {
+    id: string;
+    dinerAutoReplyEnabled: boolean;
+    subscriptionStatus: string;
+    subscription: { plan: any } | null;
+    operatorAccount: { status: string } | null;
+  } | null;
+  inbound: Awaited<ReturnType<typeof handleInboundMessage>>;
+}) {
+  const restaurant = input.restaurant;
+  const inbound = input.inbound;
+  if (!restaurant || !inbound || !restaurant.dinerAutoReplyEnabled) {
+    return;
+  }
+  if (inbound.botDisabled) {
+    return;
+  }
+  if (inbound.botPausedUntil && inbound.botPausedUntil.getTime() > Date.now()) {
+    return;
+  }
+
+  const cap = getConciergeMonthlyCap(restaurant);
+  const usage = await getConciergeUsageState(restaurant.id, cap);
+  if (!usage.allowed) {
+    return;
+  }
+
+  try {
+    await enqueueDinerConciergeReply({
+      restaurantId: restaurant.id,
+      conversationId: inbound.conversationId,
+      triggerMessageId: inbound.messageId,
+      triggerMessageAt: inbound.occurredAt.toISOString(),
+      language: inbound.language,
+      escalateOnly: inbound.messageType !== "text",
+    });
+  } catch (error) {
+    captureException(error, {
+      tags: { feature: "diner-concierge", phase: "enqueue" },
+      extra: {
+        restaurantId: restaurant.id,
+        conversationId: inbound.conversationId,
+        messageId: inbound.messageId,
+      },
+    });
+  }
 }
 
 async function handleStatus(input: {
@@ -467,8 +537,13 @@ export const whatsappWebhooksRoute = new Hono()
         const restaurant = await prisma.restaurant.findUnique({
           where: { id: integration.restaurantId },
           select: {
+            id: true,
             whatsappNumber: true,
             ordersV1Enabled: true,
+            dinerAutoReplyEnabled: true,
+            subscriptionStatus: true,
+            subscription: { select: { plan: true } },
+            operatorAccount: { select: { status: true } },
             whatsappIntegration: { select: { operatorPhoneVerifiedAt: true } },
           },
         });
@@ -613,11 +688,12 @@ export const whatsappWebhooksRoute = new Hono()
             }
           }
 
-          await handleInboundMessage({
+          const inbound = await handleInboundMessage({
             integration,
             message,
             contactName: contact?.profile?.name ?? null,
           });
+          await maybeEnqueueDinerConcierge({ restaurant, inbound });
         }
 
         for (const status of statuses) {
