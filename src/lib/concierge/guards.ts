@@ -29,17 +29,32 @@ export const OFFTOPIC_PATTERNS = [
 ];
 
 const HUMAN_REQUEST_PATTERNS = [
-  /\b(?:speak|talk|chat|connect)\s+(?:to|with)\s+(?:a\s+)?(?:human|person|manager|owner|staff|representative|agent|someone)\b/i,
-  /\b(?:can|could|may)\s+i\s+(?:speak|talk|chat)\s+(?:to|with)\s+(?:a\s+)?(?:human|person|manager|owner|staff|representative|agent|someone)\b/i,
+  // Any determiner between verb and noun: "speak to THE manager",
+  // "talk to YOUR staff", "chat with an agent".
+  /\b(?:speak|talk|chat|connect)(?:ing)?\s+(?:to|with)\s+(?:(?:a|an|the|your|ur|my|some)\s+)?(?:human|person|manager|owner|staff|representative|agent|someone|somebody)\b/i,
+  /\b(?:can|could|may)\s+i\s+(?:please\s+)?(?:speak|talk|chat)\b/i,
   /\b(?:call me|phone me|have someone call|need a human|real person|human agent|customer service)\b/i,
   /\b(?:complaint|refund|cancel my order|wrong order|missing item)\b/i,
-  /(?:اتكلم|أكلم|اكلم)\s+(?:مع\s+)?(?:إنسان|انسان|موظف|مدير|شخص|مندوب)/i,
-  /(?:شكوى|استرجاع|استرداد|الغاء|إلغاء\s+طلبي)/i,
+  // Arabic request verbs (colloquial + formal التحدث/أتحدث) followed by a
+  // person noun, with or without مع/إلى and the definite article.
+  /(?:اتكلم|أكلم|اكلم|أتكلم|التحدث|أتحدث|اتحدث|التكلم)\s*(?:مع|إلى|الى)?\s*(?:ال)?(?:إنسان|انسان|موظف|مدير|شخص|مندوب|أحد|احد)/,
+  /(?:أريد|اريد|ابغى|أبغى|بدي)\s+(?:التحدث|الكلام|أتكلم|اتكلم)/,
+  /(?:شكوى|استرجاع|استرداد|الغاء\s+طلبي|إلغاء\s+طلبي)/,
 ];
 
 export type GuardResult =
   | { allowed: true }
   | { allowed: false; refusal: string; action: "reply" | "escalate"; reason: string };
+
+// Only unambiguous unsubscribe keywords silence the concierge. "cancel" and
+// "yes" also flip marketing consent (see getWhatsAppConsentCommand in the
+// webhook) but they carry conversational intent — "cancel" may mean an order,
+// "yes" may answer the bot's own question — so the bot must still respond.
+export function isExplicitWhatsAppOptOut(body: string | null | undefined) {
+  const normalized = body?.trim().toLowerCase();
+  if (!normalized) return false;
+  return ["stop", "unsubscribe", "opt out", "opt-out"].includes(normalized);
+}
 
 export function handoffMessage(language?: ConciergeLanguage) {
   return language === "ar"

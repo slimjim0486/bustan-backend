@@ -10,8 +10,6 @@ import {
 import {
   fallbackMessage,
   handoffMessage,
-  IGNORED_TYPES,
-  MEDIA_TYPES,
   runConciergeTurn,
   type ConciergeLanguage,
 } from "@/lib/concierge";
@@ -27,6 +25,13 @@ export const DINER_CONCIERGE_JOB = "diner-concierge-reply";
 const RETRY_LIMIT = 2;
 const RETRY_DELAY_SECONDS = 30;
 const DEBOUNCE_SECONDS = 10;
+// A claim that never reached "sent" within this window is treated as orphaned
+// (crash mid-send or mid-model-call): it stops anchoring the watermark and the
+// thread is flagged unread so a human looks at it.
+const ORPHAN_CLAIM_TTL_MS = 10 * 60 * 1000;
+const HISTORY_LOAD_LIMIT = 50;
+const HISTORY_MODEL_LIMIT = 20;
+const PAUSE_24H_MS = 24 * 60 * 60 * 1000;
 
 let queueReady: Promise<void> | null = null;
 
@@ -45,10 +50,11 @@ async function ensureQueue() {
 export interface DinerConciergeJobData {
   restaurantId: string;
   conversationId: string;
-  triggerMessageId: string;
-  triggerMessageAt: string;
+  // Wake-up metadata only. The worker derives what to answer from the DB at
+  // execution time; these fields are never trusted for batch content.
+  triggerMessageId?: string;
+  triggerMessageAt?: string;
   language?: ConciergeLanguage;
-  escalateOnly?: boolean;
 }
 
 type ConciergeWorkerJob = PgBoss.JobWithMetadata<DinerConciergeJobData>;
@@ -57,47 +63,52 @@ function isActivePause(conversation: { botPausedUntil: Date | null }) {
   return Boolean(conversation.botPausedUntil && conversation.botPausedUntil.getTime() > Date.now());
 }
 
-type StoredConciergeMessage = {
+export type StoredConciergeMessage = {
   id: string;
+  seq: bigint;
   direction: "inbound" | "outbound";
   source: string;
   type: string;
+  status: string;
   body: string | null;
+  answersUpToSeq: bigint | null;
   createdAt: Date;
 };
 
+// Watermark: the highest diner-message seq already answered. Bot claim rows
+// anchor at answersUpToSeq (their own seq is later than messages that arrived
+// while they were composing); owner replies and legacy bot rows anchor at
+// their own seq. Failed/orphaned claims anchor nothing, so their batch
+// reopens for a future job.
 export function deriveUnansweredBatch(messages: StoredConciergeMessage[]) {
-  const lastAnsweredAt = messages
-    .filter(
-      (message) =>
-        message.direction === "outbound" &&
-        (message.source === "bot" || message.source === "owner")
-    )
-    .reduce<Date | null>(
-      (latest, message) =>
-        !latest || message.createdAt > latest ? message.createdAt : latest,
-      null
-    );
+  let watermark = 0n;
+  for (const message of messages) {
+    if (message.direction !== "outbound") continue;
+    if (message.source === "owner") {
+      if (message.seq > watermark) watermark = message.seq;
+    } else if (message.source === "bot" && message.status !== "failed") {
+      const anchor = message.answersUpToSeq ?? message.seq;
+      if (anchor > watermark) watermark = anchor;
+    }
+  }
 
   return messages
     .filter(
       (message) =>
         message.direction === "inbound" &&
         message.source === "diner" &&
-        (!lastAnsweredAt || message.createdAt > lastAnsweredAt)
+        message.seq > watermark
     )
-    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    .sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0));
 }
 
-function isSyntheticMediaBody(message: StoredConciergeMessage) {
-  const body = message.body?.trim();
-  return !body || body === `[${message.type} message]` || body === "[message]";
-}
+// Meta's body extractor emits "[image message]", "[location message]" etc. for
+// payloads with no text/caption. Those placeholders are not diner text.
+const SYNTHETIC_BODY = /^\[(?:[a-z_-]+ )?message\]$/i;
 
-function messageBodyForConcierge(message: StoredConciergeMessage) {
+export function messageBodyForConcierge(message: Pick<StoredConciergeMessage, "body">) {
   const body = message.body?.trim();
-  if (!body || IGNORED_TYPES.has(message.type)) return null;
-  if (MEDIA_TYPES.has(message.type) && isSyntheticMediaBody(message)) return null;
+  if (!body || SYNTHETIC_BODY.test(body)) return null;
   return body;
 }
 
@@ -122,62 +133,155 @@ function isPrismaUniqueViolation(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
-function replyIdempotencyKey(messageId: string, kind: "reply" | "fallback" = "reply") {
-  return `dc:${messageId}:${kind}`;
+async function withRetries<T>(attempts: number, run: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
 }
 
-async function hasOutboundClaim(idempotencyKey: string) {
-  const existing = await prisma.whatsAppMessage.findUnique({
-    where: { idempotencyKey },
-    select: { id: true },
-  });
-  return Boolean(existing);
-}
+type ClaimedBatch = {
+  claimId: string;
+  idempotencyKey: string;
+  batch: StoredConciergeMessage[];
+  history: StoredConciergeMessage[];
+};
 
-export async function sendAndRecord(input: {
+// Serialize per-conversation derivation + claim under a Postgres advisory
+// lock (same pattern as campaign-send). Everything that decides WHAT the bot
+// owes happens inside the lock; the model call and the Meta send happen
+// after commit, protected by the claim row's unique idempotency key.
+async function claimUnansweredBatch(input: {
   restaurantId: string;
   integrationId: string;
-  accessTokenCipher: string;
-  phoneNumberId: string;
-  displayPhoneNumber: string;
   conversationId: string;
   customerId: string | null;
   customerPhone: string;
-  body: string;
-  source: "bot" | "system";
-  idempotencyKey: string;
-  pauseReason?: string | null;
-  pauseUntil?: Date | null;
-}) {
-  const sentAt = new Date();
-  let claimId = "";
+  displayPhoneNumber: string;
+}): Promise<ClaimedBatch | null> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`diner-concierge:${input.conversationId}`}, 0))`;
 
-  try {
-    const claim = await prisma.whatsAppMessage.create({
+    const orphaned = await tx.whatsAppMessage.updateMany({
+      where: {
+        conversationId: input.conversationId,
+        direction: "outbound",
+        source: "bot",
+        status: "queued",
+        providerMessageId: null,
+        createdAt: { lt: new Date(Date.now() - ORPHAN_CLAIM_TTL_MS) },
+      },
+      data: { status: "failed", failedAt: new Date() },
+    });
+    if (orphaned.count > 0) {
+      // The diner may never have received this reply. Surface the thread to
+      // the owner instead of pretending it was handled.
+      await tx.whatsAppConversation.update({
+        where: { id: input.conversationId },
+        data: { unreadCount: { increment: 1 } },
+      });
+    }
+
+    const rows = await tx.whatsAppMessage.findMany({
+      where: { conversationId: input.conversationId },
+      orderBy: { seq: "desc" },
+      take: HISTORY_LOAD_LIMIT,
+      select: {
+        id: true,
+        seq: true,
+        direction: true,
+        source: true,
+        type: true,
+        status: true,
+        body: true,
+        answersUpToSeq: true,
+        createdAt: true,
+      },
+    });
+    const messages = rows.slice().reverse() as StoredConciergeMessage[];
+
+    const batch = deriveUnansweredBatch(messages);
+    if (batch.length === 0) {
+      return null;
+    }
+
+    const lastSeq = batch[batch.length - 1].seq;
+    const idempotencyKey = `dc:${input.conversationId}:${lastSeq.toString()}`;
+
+    // Check-then-create is race-free here: every claim writer holds the
+    // advisory lock for this conversation.
+    const existingClaim = await tx.whatsAppMessage.findUnique({
+      where: { idempotencyKey },
+      select: { id: true },
+    });
+    if (existingClaim) {
+      return null;
+    }
+
+    const batchIds = new Set(batch.map((message) => message.id));
+    const claim = await tx.whatsAppMessage.create({
       data: {
         restaurantId: input.restaurantId,
         integrationId: input.integrationId,
         conversationId: input.conversationId,
         customerId: input.customerId,
-        idempotencyKey: input.idempotencyKey,
+        idempotencyKey,
+        answersUpToSeq: lastSeq,
         direction: "outbound",
         type: "text",
         status: "queued",
-        source: input.source,
+        source: "bot",
         fromPhone: input.displayPhoneNumber,
         toPhone: input.customerPhone,
-        body: input.body,
       },
       select: { id: true },
     });
-    claimId = claim.id;
-  } catch (error) {
-    if (isPrismaUniqueViolation(error)) {
-      return;
-    }
-    throw error;
-  }
 
+    return {
+      claimId: claim.id,
+      idempotencyKey,
+      batch,
+      history: messages.filter((message) => !batchIds.has(message.id)),
+    };
+  });
+}
+
+async function releaseClaim(claimId: string, idempotencyKey: string) {
+  await prisma.whatsAppMessage
+    .delete({ where: { id: claimId } })
+    .catch((deleteError) => {
+      captureException(deleteError, {
+        tags: { job: DINER_CONCIERGE_JOB, phase: "release_claim" },
+        extra: { idempotencyKey, claimId },
+      });
+    });
+}
+
+// Send the claimed reply and finalize bookkeeping. The Meta send failing
+// releases the claim and rethrows (pg-boss retries re-derive and re-claim).
+// Bookkeeping after a successful send is retried but never rethrown: a
+// retry after the diner already received the message would double-send.
+async function sendClaimedReply(input: {
+  claimId: string;
+  idempotencyKey: string;
+  restaurantId: string;
+  conversationId: string;
+  accessTokenCipher: string;
+  phoneNumberId: string;
+  customerPhone: string;
+  body: string;
+  pauseReason?: string | null;
+  pauseUntil?: Date | null;
+}) {
+  const sentAt = new Date();
   let providerMessageId: string;
   try {
     providerMessageId = await sendWhatsAppText({
@@ -187,58 +291,56 @@ export async function sendAndRecord(input: {
       body: input.body,
     });
   } catch (error) {
-    await prisma.whatsAppMessage
-      .delete({ where: { id: claimId } })
-      .catch((deleteError) => {
-        captureException(deleteError, {
-          tags: { job: DINER_CONCIERGE_JOB, phase: "delete_failed_send_claim" },
-          extra: { idempotencyKey: input.idempotencyKey, claimId },
-        });
-      });
+    await releaseClaim(input.claimId, input.idempotencyKey);
     throw error;
   }
 
   try {
-    await prisma.$transaction(async (tx) => {
-      await tx.whatsAppMessage.update({
-        where: { id: claimId },
-        data: {
-          providerMessageId,
-          status: "sent",
-          sentAt,
-        },
-      });
-
-      await tx.whatsAppConversation.update({
-        where: { id: input.conversationId },
-        data: {
-          lastMessageAt: sentAt,
-          ...(input.pauseUntil
-            ? {
-                botPausedUntil: input.pauseUntil,
-                botPausedReason: input.pauseReason,
-              }
-            : {}),
-        },
-      });
-    });
+    await withRetries(3, () =>
+      prisma.$transaction([
+        prisma.whatsAppMessage.update({
+          where: { id: input.claimId },
+          data: {
+            providerMessageId,
+            status: "sent",
+            body: input.body,
+            sentAt,
+          },
+        }),
+        prisma.whatsAppConversation.update({
+          where: { id: input.conversationId },
+          data: {
+            lastMessageAt: sentAt,
+            ...(input.pauseUntil
+              ? {
+                  botPausedUntil: input.pauseUntil,
+                  botPausedReason: input.pauseReason,
+                }
+              : {}),
+          },
+        }),
+      ])
+    );
   } catch (error) {
+    // The message reached the diner but bookkeeping failed three times. The
+    // claim stays "queued" and the orphan reconciler will flag the thread
+    // for the owner; do not rethrow (a job retry would re-send).
     captureException(error, {
       tags: { job: DINER_CONCIERGE_JOB, phase: "post_send_bookkeeping" },
       extra: {
         idempotencyKey: input.idempotencyKey,
-        claimId,
+        claimId: input.claimId,
         providerMessageId,
       },
     });
   }
 
   try {
-    await incrementConciergeUsage(input.restaurantId);
+    await withRetries(3, () => incrementConciergeUsage(input.restaurantId));
   } catch (error) {
     captureException(error, {
       tags: { job: DINER_CONCIERGE_JOB, phase: "usage_increment" },
-      extra: { idempotencyKey: input.idempotencyKey, claimId },
+      extra: { idempotencyKey: input.idempotencyKey, claimId: input.claimId },
     });
   }
 }
@@ -290,10 +392,6 @@ async function loadConversationForJob(job: DinerConciergeJobData) {
           preferredLanguage: true,
         },
       },
-      messages: {
-        orderBy: { createdAt: "desc" },
-        take: 25,
-      },
     },
   });
 }
@@ -326,82 +424,82 @@ async function recentOrdersForPhone(restaurantId: string, customerPhone: string)
   });
 }
 
-async function processConciergeJob(job: ConciergeWorkerJob) {
-  const data = job.data;
-  const conversation = await loadConversationForJob(data);
+type LoadedConversation = NonNullable<Awaited<ReturnType<typeof loadConversationForJob>>>;
+
+async function checkEligibility(job: DinerConciergeJobData): Promise<LoadedConversation | null> {
+  const conversation = await loadConversationForJob(job);
 
   if (!conversation || !conversation.integration || conversation.integration.status !== "connected") {
-    return;
+    return null;
   }
-
   if (!conversation.restaurant.dinerAutoReplyEnabled) {
-    return;
+    return null;
   }
   if (conversation.botDisabled || isActivePause(conversation)) {
-    return;
+    return null;
   }
 
   const cap = getConciergeMonthlyCap(conversation.restaurant);
   const usage = await getConciergeUsageState(conversation.restaurantId, cap);
   if (!usage.allowed) {
+    return null;
+  }
+
+  return conversation;
+}
+
+async function processConciergeJob(job: ConciergeWorkerJob) {
+  const data = job.data;
+  const conversation = await checkEligibility(data);
+  if (!conversation?.integration) {
     return;
   }
 
-  const unanswered = deriveUnansweredBatch(conversation.messages);
-  if (unanswered.length === 0) {
+  const claimed = await claimUnansweredBatch({
+    restaurantId: conversation.restaurantId,
+    integrationId: conversation.integration.id,
+    conversationId: conversation.id,
+    customerId: conversation.customerId,
+    customerPhone: conversation.customerPhone,
+    displayPhoneNumber: conversation.integration.displayPhoneNumber,
+  });
+  if (!claimed) {
     return;
   }
 
-  const firstUnanswered = unanswered[0];
-  const lastUnanswered = unanswered[unanswered.length - 1];
-  const idempotencyKey = replyIdempotencyKey(lastUnanswered.id);
-  if (await hasOutboundClaim(idempotencyKey)) {
-    return;
-  }
-
-  const ownerAfterFirstUnanswered = conversation.messages.some(
-    (message) => message.source === "owner" && message.createdAt > firstUnanswered.createdAt
-  );
-  if (ownerAfterFirstUnanswered) {
-    return;
-  }
-
-  const mediaMessages = unanswered.filter((message) => MEDIA_TYPES.has(message.type));
-  const textBodies = unanswered
+  const language = (conversation.customer?.preferredLanguage ?? data.language) as
+    | ConciergeLanguage
+    | undefined;
+  const textBodies = claimed.batch
     .map(messageBodyForConcierge)
     .filter((body): body is string => Boolean(body));
-  const language = conversation.customer?.preferredLanguage ?? data.language;
+  const hasNonText = claimed.batch.some((message) => !messageBodyForConcierge(message));
 
-  if (mediaMessages.length > 0 && textBodies.length === 0) {
-    await sendAndRecord({
-      restaurantId: conversation.restaurantId,
-      integrationId: conversation.integration.id,
-      accessTokenCipher: conversation.integration.accessTokenCipher,
-      phoneNumberId: conversation.integration.phoneNumberId,
-      displayPhoneNumber: conversation.integration.displayPhoneNumber,
-      conversationId: conversation.id,
-      customerId: conversation.customerId,
-      customerPhone: conversation.customerPhone,
+  const sendInput = {
+    claimId: claimed.claimId,
+    idempotencyKey: claimed.idempotencyKey,
+    restaurantId: conversation.restaurantId,
+    conversationId: conversation.id,
+    accessTokenCipher: conversation.integration.accessTokenCipher,
+    phoneNumberId: conversation.integration.phoneNumberId,
+    customerPhone: conversation.customerPhone,
+  };
+
+  // No readable text at all (media, location pins, stickers, unknown types):
+  // hand off to the owner and pause, like a media-only batch.
+  if (textBodies.length === 0) {
+    await sendClaimedReply({
+      ...sendInput,
       body: handoffMessage(language),
-      source: "bot",
-      idempotencyKey,
-      pauseUntil: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      pauseUntil: new Date(Date.now() + PAUSE_24H_MS),
       pauseReason: "agent_escalated",
     });
     return;
   }
 
-  if (textBodies.length === 0) {
-    return;
-  }
-
-  const unansweredIds = new Set(unanswered.map((message) => message.id));
-  const recentMessages = conversation.messages
-    .slice()
-    .reverse()
-    .filter((message) => !unansweredIds.has(message.id))
+  const history = claimed.history
     .filter((message) => messageBodyForConcierge(message))
-    .slice(-20)
+    .slice(-HISTORY_MODEL_LIMIT)
     .map((message) => ({
       role: message.direction === "inbound" ? ("user" as const) : ("assistant" as const),
       content: messageBodyForConcierge(message) as string,
@@ -409,7 +507,7 @@ async function processConciergeJob(job: ConciergeWorkerJob) {
 
   const messageText = [
     textBodies.join("\n"),
-    mediaMessages.length > 0
+    hasNonText
       ? "The diner also sent an attachment that cannot be inspected here."
       : null,
   ]
@@ -420,29 +518,29 @@ async function processConciergeJob(job: ConciergeWorkerJob) {
     ...conversation.restaurant,
     recentOrders: await recentOrdersForPhone(conversation.restaurantId, conversation.customerPhone),
   };
-  const turn = await runConciergeTurn({
-    restaurant,
-    channel: "whatsapp",
-    message: messageText,
-    history: recentMessages,
-    language,
-    customerPhone: conversation.customerPhone,
-  });
+
+  let turn;
+  try {
+    turn = await runConciergeTurn({
+      restaurant,
+      channel: "whatsapp",
+      message: messageText,
+      history,
+      language,
+      customerPhone: conversation.customerPhone,
+    });
+  } catch (error) {
+    // Model failure: release the claim so the retry (or the final fallback)
+    // can re-derive and re-claim this batch.
+    await releaseClaim(claimed.claimId, claimed.idempotencyKey);
+    throw error;
+  }
 
   const shouldEscalate = turn.action === "escalate";
-  await sendAndRecord({
-    restaurantId: conversation.restaurantId,
-    integrationId: conversation.integration.id,
-    accessTokenCipher: conversation.integration.accessTokenCipher,
-    phoneNumberId: conversation.integration.phoneNumberId,
-    displayPhoneNumber: conversation.integration.displayPhoneNumber,
-    conversationId: conversation.id,
-    customerId: conversation.customerId,
-    customerPhone: conversation.customerPhone,
+  await sendClaimedReply({
+    ...sendInput,
     body: shouldEscalate ? turn.reply || handoffMessage(language) : turn.reply,
-    source: "bot",
-    idempotencyKey,
-    pauseUntil: shouldEscalate ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null,
+    pauseUntil: shouldEscalate ? new Date(Date.now() + PAUSE_24H_MS) : null,
     pauseReason: shouldEscalate ? "agent_escalated" : null,
   });
 
@@ -454,42 +552,52 @@ async function processConciergeJob(job: ConciergeWorkerJob) {
     outputTokens: turn.outputTokens,
     cacheReadInputTokens: turn.cacheReadInputTokens,
     cacheCreationInputTokens: turn.cacheCreationInputTokens,
-    unansweredCount: unanswered.length,
+    unansweredCount: claimed.batch.length,
   });
 }
 
+// The final fallback runs the SAME eligibility gates and the SAME locked
+// claim as a normal reply. If the owner answered during the retry window,
+// the bot was paused/disabled, the cap ran out, or the batch was already
+// claimed, it stays silent.
 async function sendFinalFallback(job: ConciergeWorkerJob, error: unknown) {
   captureException(error, {
     tags: { job: DINER_CONCIERGE_JOB, final: true },
     extra: { data: job.data },
   });
 
-  const conversation = await loadConversationForJob(job.data);
-  if (!conversation?.integration || conversation.integration.status !== "connected") {
+  const conversation = await checkEligibility(job.data);
+  if (!conversation?.integration) {
     return;
   }
 
-  const unanswered = deriveUnansweredBatch(conversation.messages);
-  const anchorMessageId = unanswered.at(-1)?.id ?? job.data.triggerMessageId;
-  const replyKey = replyIdempotencyKey(anchorMessageId);
-  if (await hasOutboundClaim(replyKey)) {
+  const claimed = await claimUnansweredBatch({
+    restaurantId: conversation.restaurantId,
+    integrationId: conversation.integration.id,
+    conversationId: conversation.id,
+    customerId: conversation.customerId,
+    customerPhone: conversation.customerPhone,
+    displayPhoneNumber: conversation.integration.displayPhoneNumber,
+  });
+  if (!claimed) {
     return;
   }
 
   try {
-    await sendAndRecord({
+    await sendClaimedReply({
+      claimId: claimed.claimId,
+      idempotencyKey: claimed.idempotencyKey,
       restaurantId: conversation.restaurantId,
-      integrationId: conversation.integration.id,
+      conversationId: conversation.id,
       accessTokenCipher: conversation.integration.accessTokenCipher,
       phoneNumberId: conversation.integration.phoneNumberId,
-      displayPhoneNumber: conversation.integration.displayPhoneNumber,
-      conversationId: conversation.id,
-      customerId: conversation.customerId,
       customerPhone: conversation.customerPhone,
-      body: fallbackMessage(conversation.customer?.preferredLanguage ?? job.data.language),
-      source: "bot",
-      idempotencyKey: replyIdempotencyKey(anchorMessageId, "fallback"),
-      pauseUntil: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      body: fallbackMessage(
+        (conversation.customer?.preferredLanguage ?? job.data.language) as
+          | ConciergeLanguage
+          | undefined
+      ),
+      pauseUntil: new Date(Date.now() + PAUSE_24H_MS),
       pauseReason: "agent_escalated",
     });
   } catch (fallbackError) {
@@ -504,9 +612,12 @@ export async function startDinerConciergeWorker() {
   await ensureQueue();
   const queue = await getBoss();
 
+  // batchSize MUST stay 1: pg-boss fails a whole batch when the handler
+  // throws, which would fail innocent co-batched jobs and burn their
+  // retries without running them.
   await queue.work<DinerConciergeJobData>(
     DINER_CONCIERGE_JOB,
-    { batchSize: 4, includeMetadata: true } as PgBoss.WorkOptions,
+    { batchSize: 1, includeMetadata: true } as PgBoss.WorkOptions,
     async (jobs) => {
       for (const job of jobs as unknown as ConciergeWorkerJob[]) {
         try {

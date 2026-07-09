@@ -16,7 +16,7 @@ import { captureException } from "@/lib/sentry";
 import { extractCtwaReferral } from "@/lib/ctwa-referral";
 import { resolveAdProjectByMetaAdId } from "@/lib/ctwa-resolver";
 import { getConciergeMonthlyCap, getConciergeUsageState } from "@/lib/concierge/usage";
-import { IGNORED_TYPES, MEDIA_TYPES } from "@/lib/concierge";
+import { isExplicitWhatsAppOptOut } from "@/lib/concierge";
 import { enqueueDinerConciergeReply } from "@/queue/diner-concierge";
 import {
   detectOrderAction,
@@ -142,6 +142,7 @@ async function handleInboundMessage(input: {
       language: detectedLanguage,
       consentCommand,
       body,
+      rawType: String(input.message.type ?? "unknown"),
       duplicate: true,
     };
   }
@@ -330,6 +331,7 @@ async function handleInboundMessage(input: {
       language: detectedLanguage,
       consentCommand,
       body,
+      rawType: String(input.message.type ?? "unknown"),
       duplicate: false,
     };
   });
@@ -350,7 +352,12 @@ async function maybeEnqueueDinerConcierge(input: {
   if (!restaurant || !inbound || !inbound.conversationId || !restaurant.dinerAutoReplyEnabled) {
     return;
   }
-  if (inbound.duplicate || inbound.consentCommand) {
+  if (inbound.duplicate) {
+    return;
+  }
+  // Only unambiguous STOP-style keywords bypass the bot; "yes"/"cancel" are
+  // conversational even though they also touch consent state.
+  if (isExplicitWhatsAppOptOut(inbound.body)) {
     return;
   }
   if (inbound.botDisabled) {
@@ -359,10 +366,10 @@ async function maybeEnqueueDinerConcierge(input: {
   if (inbound.botPausedUntil && inbound.botPausedUntil.getTime() > Date.now()) {
     return;
   }
-  if (IGNORED_TYPES.has(inbound.messageType)) {
-    return;
-  }
-  if (!MEDIA_TYPES.has(inbound.messageType) && !inbound.body?.trim()) {
+  // Reactions are acknowledgments, not messages — never answer them. Every
+  // other type (text, media, location, stickers, unknown) enqueues; the
+  // worker answers readable text and hands non-text off to the owner.
+  if (inbound.rawType === "reaction") {
     return;
   }
 
@@ -379,7 +386,6 @@ async function maybeEnqueueDinerConcierge(input: {
       triggerMessageId: inbound.messageId,
       triggerMessageAt: inbound.occurredAt.toISOString(),
       language: inbound.language,
-      escalateOnly: MEDIA_TYPES.has(inbound.messageType),
     });
   } catch (error) {
     captureException(error, {

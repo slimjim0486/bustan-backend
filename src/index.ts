@@ -26,6 +26,7 @@ import { startEventStagerWorker } from "@/queue/event-stager";
 import { startCompetitorIntelWorker } from "@/queue/competitor-intel";
 import { startCoworkerDailyBriefWorker } from "@/queue/coworker-daily-brief";
 import { startDraftShipWorker } from "@/queue/draft-ship";
+import { startDinerConciergeWorker } from "@/queue/diner-concierge";
 import { adStudioRoute, adStudioPublicRoute } from "@/routes/ad-studio";
 import { sabtPackRoute, sabtPackAdminRoute } from "@/routes/sabt-pack";
 import { marketPulseRoute } from "@/routes/market-pulse";
@@ -248,4 +249,16 @@ startDraftShipWorker()
   })
   .catch((error) => {
     console.error("pg-boss draft-ship worker failed to start", error);
+  });
+
+// Registered here like every other worker so the queue always has a live
+// consumer (no separate worker service is deployed). The dedicated
+// entrypoint in src/queue/worker.ts may ALSO run: the per-conversation
+// advisory lock + claim rows make multiple consumers safe.
+startDinerConciergeWorker()
+  .then(() => {
+    console.log("pg-boss diner-concierge worker started");
+  })
+  .catch((error) => {
+    console.error("pg-boss diner-concierge worker failed to start", error);
   });

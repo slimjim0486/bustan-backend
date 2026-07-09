@@ -87,5 +87,3 @@ export type ConciergeToolContext = {
 
 export type PreparedMessages = MessageParam[];
 
-export const MEDIA_TYPES = new Set<string>(["image", "audio", "video", "document"]);
-export const IGNORED_TYPES = new Set<string>(["reaction", "unknown", "system", "ephemeral"]);

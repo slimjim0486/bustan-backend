@@ -1067,6 +1067,11 @@ model WhatsAppMessage {
   messageLogId      String?                  @unique @map("message_log_id")
   providerMessageId String?                  @unique @map("provider_message_id")
   idempotencyKey    String?                  @unique @map("idempotency_key")
+  // Monotonic insertion order. Webhook timestamps are second-truncated and
+  // outbound rows use DB time, so createdAt cannot order a conversation.
+  seq               BigInt                   @unique @default(autoincrement())
+  // Bot claim rows only: highest diner-message seq this reply answers.
+  answersUpToSeq    BigInt?                  @map("answers_up_to_seq")
   direction         WhatsAppMessageDirection
   type              WhatsAppMessageType      @default(text)
   status            WhatsAppMessageStatus    @default(received)

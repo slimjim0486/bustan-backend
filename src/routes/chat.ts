@@ -18,6 +18,7 @@ import {
   getClientIp,
 } from "@/lib/public-request-guards";
 import { runConciergeTurn, webEscalationMessage } from "@/lib/concierge";
+import { detectLanguage } from "@/lib/language-detect";
 import { createSousChefMessage } from "@/services/anthropic-models";
 import {
   type BustanKbTopic,
@@ -697,7 +698,10 @@ export const chatRoute = new Hono().post("/:restaurantId", async (c) => {
     );
 
     return c.json({
-      reply: turn.action === "escalate" ? webEscalationMessage() : turn.reply,
+      reply:
+        turn.action === "escalate"
+          ? webEscalationMessage(detectLanguage(data.message) ?? undefined)
+          : turn.reply,
     });
   } catch (error) {
     return errorResponse(c, error);
