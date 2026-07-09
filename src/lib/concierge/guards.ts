@@ -32,28 +32,44 @@ const HUMAN_REQUEST_PATTERNS = [
   // Any determiner between verb and noun: "speak to THE manager",
   // "talk to YOUR staff", "chat with an agent".
   /\b(?:speak|talk|chat|connect)(?:ing)?\s+(?:to|with)\s+(?:(?:a|an|the|your|ur|my|some)\s+)?(?:human|person|manager|owner|staff|representative|agent|someone|somebody)\b/i,
-  /\b(?:can|could|may)\s+i\s+(?:please\s+)?(?:speak|talk|chat)\b/i,
+  // Requires to/with so "can I talk ABOUT the allergens?" stays with the model.
+  /\b(?:can|could|may)\s+i\s+(?:please\s+)?(?:speak|talk|chat)\s+(?:to|with)\b/i,
   /\b(?:call me|phone me|have someone call|need a human|real person|human agent|customer service)\b/i,
   /\b(?:complaint|refund|cancel my order|wrong order|missing item)\b/i,
   // Arabic request verbs (colloquial + formal التحدث/أتحدث) followed by a
   // person noun, with or without مع/إلى and the definite article.
   /(?:اتكلم|أكلم|اكلم|أتكلم|التحدث|أتحدث|اتحدث|التكلم)\s*(?:مع|إلى|الى)?\s*(?:ال)?(?:إنسان|انسان|موظف|مدير|شخص|مندوب|أحد|احد)/,
   /(?:أريد|اريد|ابغى|أبغى|بدي)\s+(?:التحدث|الكلام|أتكلم|اتكلم)/,
-  /(?:شكوى|استرجاع|استرداد|الغاء\s+طلبي|إلغاء\s+طلبي)/,
+  /(?:شكوى|استرجاع|استرداد)/,
+  // Cancelling an order/booking is time-critical: with possessive (طلبي),
+  // definite article (الطلب), or bare noun.
+  /(?:الغاء|إلغاء)\s+(?:ال)?(?:طلب|حجز|اوردر|أوردر)/,
 ];
 
 export type GuardResult =
   | { allowed: true }
   | { allowed: false; refusal: string; action: "reply" | "escalate"; reason: string };
 
-// Only unambiguous unsubscribe keywords silence the concierge. "cancel" and
-// "yes" also flip marketing consent (see getWhatsAppConsentCommand in the
-// webhook) but they carry conversational intent — "cancel" may mean an order,
-// "yes" may answer the bot's own question — so the bot must still respond.
-export function isExplicitWhatsAppOptOut(body: string | null | undefined) {
+// Bare consent keywords silence the concierge: they are commands to the
+// consent system, not questions ("subscribe" should not get a chatty reply).
+// "cancel" and "yes" also flip marketing consent (see getWhatsAppConsentCommand
+// in the webhook) but carry conversational intent — "cancel" may mean an
+// order, "yes" may answer the bot's own question — so the bot still responds.
+const CONSENT_ONLY_KEYWORDS = new Set([
+  "stop",
+  "unsubscribe",
+  "opt out",
+  "opt-out",
+  "start",
+  "subscribe",
+  "opt in",
+  "opt-in",
+]);
+
+export function isConsentOnlyKeyword(body: string | null | undefined) {
   const normalized = body?.trim().toLowerCase();
   if (!normalized) return false;
-  return ["stop", "unsubscribe", "opt out", "opt-out"].includes(normalized);
+  return CONSENT_ONLY_KEYWORDS.has(normalized);
 }
 
 export function handoffMessage(language?: ConciergeLanguage) {

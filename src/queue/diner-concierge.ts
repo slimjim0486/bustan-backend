@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import PgBoss from "pg-boss";
+import { ApiError } from "@/lib/errors";
 import { buildPublicMenuItemWhere } from "@/lib/menu-visibility";
 import { prisma } from "@/lib/prisma";
 import { captureException } from "@/lib/sentry";
@@ -27,8 +28,11 @@ const RETRY_DELAY_SECONDS = 30;
 const DEBOUNCE_SECONDS = 10;
 // A claim that never reached "sent" within this window is treated as orphaned
 // (crash mid-send or mid-model-call): it stops anchoring the watermark and the
-// thread is flagged unread so a human looks at it.
-const ORPHAN_CLAIM_TTL_MS = 10 * 60 * 1000;
+// thread is flagged unread so a human looks at it. Must comfortably exceed
+// worst-case model latency (SDK timeout x retries x tool iterations during an
+// API brownout); sendClaimedReply also re-checks claim liveness before the
+// Meta send so a job that DOES outlive the TTL aborts instead of double-sending.
+const ORPHAN_CLAIM_TTL_MS = 30 * 60 * 1000;
 const HISTORY_LOAD_LIMIT = 50;
 const HISTORY_MODEL_LIMIT = 20;
 const PAUSE_24H_MS = 24 * 60 * 60 * 1000;
@@ -84,9 +88,12 @@ export function deriveUnansweredBatch(messages: StoredConciergeMessage[]) {
   let watermark = 0n;
   for (const message of messages) {
     if (message.direction !== "outbound") continue;
+    // A failed send never reached the diner — it answers nothing, whether it
+    // came from the bot or the owner.
+    if (message.status === "failed") continue;
     if (message.source === "owner") {
       if (message.seq > watermark) watermark = message.seq;
-    } else if (message.source === "bot" && message.status !== "failed") {
+    } else if (message.source === "bot") {
       const anchor = message.answersUpToSeq ?? message.seq;
       if (anchor > watermark) watermark = anchor;
     }
@@ -265,10 +272,21 @@ async function releaseClaim(claimId: string, idempotencyKey: string) {
     });
 }
 
-// Send the claimed reply and finalize bookkeeping. The Meta send failing
-// releases the claim and rethrows (pg-boss retries re-derive and re-claim).
-// Bookkeeping after a successful send is retried but never rethrown: a
-// retry after the diner already received the message would double-send.
+// Meta responded with a 4xx: the message was definitively rejected, so the
+// claim can be released and the retry can safely re-send. Anything else —
+// network error, timeout, Meta 5xx, ok-response-without-id — is AMBIGUOUS:
+// the message may have been delivered, so the claim must survive.
+function isDefinitiveSendRejection(error: unknown) {
+  return error instanceof ApiError && error.status >= 400 && error.status < 500;
+}
+
+// Send the claimed reply and finalize bookkeeping.
+// - Definitive Meta rejection: release the claim + rethrow (retry re-claims).
+// - Ambiguous send failure: KEEP the claim and swallow — deleting it would
+//   let the retry re-send a message the diner may already have received.
+//   The orphan reconciler surfaces the thread to the owner.
+// - Bookkeeping after a successful send is retried but never rethrown: a
+//   job retry after the diner received the message would double-send.
 async function sendClaimedReply(input: {
   claimId: string;
   idempotencyKey: string;
@@ -281,6 +299,17 @@ async function sendClaimedReply(input: {
   pauseReason?: string | null;
   pauseUntil?: Date | null;
 }) {
+  // Liveness check: if this job stalled past ORPHAN_CLAIM_TTL_MS, another
+  // job has already failed this claim (and may have re-answered the batch).
+  // A stale reply on top of that would be a duplicate.
+  const liveClaim = await prisma.whatsAppMessage.findUnique({
+    where: { id: input.claimId },
+    select: { status: true },
+  });
+  if (!liveClaim || liveClaim.status !== "queued") {
+    return;
+  }
+
   const sentAt = new Date();
   let providerMessageId: string;
   try {
@@ -291,46 +320,66 @@ async function sendClaimedReply(input: {
       body: input.body,
     });
   } catch (error) {
-    await releaseClaim(input.claimId, input.idempotencyKey);
-    throw error;
+    if (isDefinitiveSendRejection(error)) {
+      await releaseClaim(input.claimId, input.idempotencyKey);
+      throw error;
+    }
+    captureException(error, {
+      tags: { job: DINER_CONCIERGE_JOB, phase: "ambiguous_send_failure" },
+      extra: { idempotencyKey: input.idempotencyKey, claimId: input.claimId },
+    });
+    return;
   }
 
+  // Critical bookkeeping first, on its own: marking the claim "sent" is what
+  // prevents the orphan reconciler from reopening an already-delivered batch.
   try {
     await withRetries(3, () =>
-      prisma.$transaction([
-        prisma.whatsAppMessage.update({
-          where: { id: input.claimId },
-          data: {
-            providerMessageId,
-            status: "sent",
-            body: input.body,
-            sentAt,
-          },
-        }),
-        prisma.whatsAppConversation.update({
-          where: { id: input.conversationId },
-          data: {
-            lastMessageAt: sentAt,
-            ...(input.pauseUntil
-              ? {
-                  botPausedUntil: input.pauseUntil,
-                  botPausedReason: input.pauseReason,
-                }
-              : {}),
-          },
-        }),
-      ])
+      prisma.whatsAppMessage.update({
+        where: { id: input.claimId },
+        data: {
+          providerMessageId,
+          status: "sent",
+          body: input.body,
+          sentAt,
+        },
+      })
     );
   } catch (error) {
-    // The message reached the diner but bookkeeping failed three times. The
-    // claim stays "queued" and the orphan reconciler will flag the thread
-    // for the owner; do not rethrow (a job retry would re-send).
     captureException(error, {
-      tags: { job: DINER_CONCIERGE_JOB, phase: "post_send_bookkeeping" },
+      tags: { job: DINER_CONCIERGE_JOB, phase: "mark_sent" },
       extra: {
         idempotencyKey: input.idempotencyKey,
         claimId: input.claimId,
         providerMessageId,
+      },
+    });
+  }
+
+  try {
+    await withRetries(3, () =>
+      prisma.whatsAppConversation.update({
+        where: { id: input.conversationId },
+        data: {
+          lastMessageAt: sentAt,
+          ...(input.pauseUntil
+            ? {
+                botPausedUntil: input.pauseUntil,
+                botPausedReason: input.pauseReason,
+              }
+            : {}),
+        },
+      })
+    );
+  } catch (error) {
+    // Worst case here: an escalation pause is lost and the bot keeps
+    // answering. Logged loudly; the claim itself is already marked sent.
+    captureException(error, {
+      tags: { job: DINER_CONCIERGE_JOB, phase: "conversation_bookkeeping" },
+      extra: {
+        idempotencyKey: input.idempotencyKey,
+        claimId: input.claimId,
+        pauseLost: Boolean(input.pauseUntil),
       },
     });
   }
@@ -345,6 +394,10 @@ async function sendClaimedReply(input: {
   }
 }
 
+// Light load for eligibility + claiming: no menu. Every debounced wake-up
+// (including the common already-claimed no-op) and the fallback path run
+// this; the heavy menu context loads only when a claim succeeds and the
+// model actually runs.
 async function loadConversationForJob(job: DinerConciergeJobData) {
   return prisma.whatsAppConversation.findFirst({
     where: {
@@ -357,39 +410,49 @@ async function loadConversationForJob(job: DinerConciergeJobData) {
         include: {
           subscription: true,
           operatorAccount: { include: { _count: { select: { brands: true } } } },
-          menuSections: {
+        },
+      },
+      customer: {
+        select: {
+          preferredLanguage: true,
+        },
+      },
+    },
+  });
+}
+
+async function loadRestaurantMenuContext(restaurantId: string) {
+  return prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    include: {
+      subscription: true,
+      operatorAccount: { include: { _count: { select: { brands: true } } } },
+      menuSections: {
+        orderBy: { displayOrder: "asc" },
+        include: {
+          items: {
+            where: buildPublicMenuItemWhere(),
             orderBy: { displayOrder: "asc" },
-            include: {
-              items: {
-                where: buildPublicMenuItemWhere(),
-                orderBy: { displayOrder: "asc" },
+            select: {
+              name: true,
+              description: true,
+              price: true,
+              dietaryTags: {
                 select: {
-                  name: true,
-                  description: true,
-                  price: true,
-                  dietaryTags: {
+                  source: true,
+                  confidence: true,
+                  tag: {
                     select: {
-                      source: true,
-                      confidence: true,
-                      tag: {
-                        select: {
-                          key: true,
-                          label: true,
-                          icon: true,
-                          category: true,
-                        },
-                      },
+                      key: true,
+                      label: true,
+                      icon: true,
+                      category: true,
                     },
                   },
                 },
               },
             },
           },
-        },
-      },
-      customer: {
-        select: {
-          preferredLanguage: true,
         },
       },
     },
@@ -514,8 +577,13 @@ async function processConciergeJob(job: ConciergeWorkerJob) {
     .filter(Boolean)
     .join("\n\n");
 
+  const restaurantContext = await loadRestaurantMenuContext(conversation.restaurantId);
+  if (!restaurantContext) {
+    await releaseClaim(claimed.claimId, claimed.idempotencyKey);
+    return;
+  }
   const restaurant = {
-    ...conversation.restaurant,
+    ...restaurantContext,
     recentOrders: await recentOrdersForPhone(conversation.restaurantId, conversation.customerPhone),
   };
 

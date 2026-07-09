@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   checkInputGuardrails,
   handoffMessage,
-  isExplicitWhatsAppOptOut,
+  isConsentOnlyKeyword,
   parseConciergeAction,
 } from "@/lib/concierge/guards";
 import { getConciergeMonthlyCap } from "@/lib/concierge/usage";
@@ -20,6 +20,8 @@ test("WhatsApp human requests escalate instead of using the model", () => {
     "اتكلم مع موظف",
     "أريد التحدث مع المدير",
     "التحدث مع مدير",
+    "أريد إلغاء الطلب",
+    "الغاء طلبي",
     "شكوى",
   ];
 
@@ -41,6 +43,8 @@ test("WhatsApp human guard does not escalate normal menu phrases", () => {
     "Is this enough food for one person?",
     "Can someone explain the mezze platter ingredients?",
     "do your staff wear gloves?",
+    "Can I talk about the allergens in the mezze platter?",
+    "Can I chat about delivery options?",
     "هل الموظف يجهز الطلب الآن؟",
   ];
 
@@ -50,17 +54,19 @@ test("WhatsApp human guard does not escalate normal menu phrases", () => {
   }
 });
 
-test("only unambiguous STOP keywords silence the concierge", () => {
-  assert.equal(isExplicitWhatsAppOptOut("STOP"), true);
-  assert.equal(isExplicitWhatsAppOptOut("  unsubscribe "), true);
-  assert.equal(isExplicitWhatsAppOptOut("opt out"), true);
-  assert.equal(isExplicitWhatsAppOptOut("opt-out"), true);
+test("bare consent keywords silence the concierge; conversational words do not", () => {
+  assert.equal(isConsentOnlyKeyword("STOP"), true);
+  assert.equal(isConsentOnlyKeyword("  unsubscribe "), true);
+  assert.equal(isConsentOnlyKeyword("opt out"), true);
+  assert.equal(isConsentOnlyKeyword("opt-out"), true);
+  assert.equal(isConsentOnlyKeyword("start"), true);
+  assert.equal(isConsentOnlyKeyword("subscribe"), true);
+  assert.equal(isConsentOnlyKeyword("opt in"), true);
   // Conversational words that also touch consent state must still get a reply.
-  assert.equal(isExplicitWhatsAppOptOut("yes"), false);
-  assert.equal(isExplicitWhatsAppOptOut("cancel"), false);
-  assert.equal(isExplicitWhatsAppOptOut("start"), false);
-  assert.equal(isExplicitWhatsAppOptOut("stop sending me the wrong order"), false);
-  assert.equal(isExplicitWhatsAppOptOut(null), false);
+  assert.equal(isConsentOnlyKeyword("yes"), false);
+  assert.equal(isConsentOnlyKeyword("cancel"), false);
+  assert.equal(isConsentOnlyKeyword("stop sending me the wrong order"), false);
+  assert.equal(isConsentOnlyKeyword(null), false);
 });
 
 test("Arabic handoff copy is returned for Arabic escalations", () => {

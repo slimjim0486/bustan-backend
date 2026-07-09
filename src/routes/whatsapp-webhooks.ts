@@ -16,7 +16,7 @@ import { captureException } from "@/lib/sentry";
 import { extractCtwaReferral } from "@/lib/ctwa-referral";
 import { resolveAdProjectByMetaAdId } from "@/lib/ctwa-resolver";
 import { getConciergeMonthlyCap, getConciergeUsageState } from "@/lib/concierge/usage";
-import { isExplicitWhatsAppOptOut } from "@/lib/concierge";
+import { isConsentOnlyKeyword } from "@/lib/concierge";
 import { enqueueDinerConciergeReply } from "@/queue/diner-concierge";
 import {
   detectOrderAction,
@@ -337,6 +337,14 @@ async function handleInboundMessage(input: {
   });
 }
 
+const SKIPPED_RAW_TYPES = new Set([
+  "reaction",
+  "system",
+  "ephemeral",
+  "unsupported",
+  "request_welcome",
+]);
+
 async function maybeEnqueueDinerConcierge(input: {
   restaurant: {
     id: string;
@@ -355,9 +363,9 @@ async function maybeEnqueueDinerConcierge(input: {
   if (inbound.duplicate) {
     return;
   }
-  // Only unambiguous STOP-style keywords bypass the bot; "yes"/"cancel" are
-  // conversational even though they also touch consent state.
-  if (isExplicitWhatsAppOptOut(inbound.body)) {
+  // Bare consent keywords (STOP/START/subscribe/...) are commands to the
+  // consent system, not questions; "yes"/"cancel" stay conversational.
+  if (isConsentOnlyKeyword(inbound.body)) {
     return;
   }
   if (inbound.botDisabled) {
@@ -366,10 +374,11 @@ async function maybeEnqueueDinerConcierge(input: {
   if (inbound.botPausedUntil && inbound.botPausedUntil.getTime() > Date.now()) {
     return;
   }
-  // Reactions are acknowledgments, not messages — never answer them. Every
-  // other type (text, media, location, stickers, unknown) enqueues; the
-  // worker answers readable text and hands non-text off to the owner.
-  if (inbound.rawType === "reaction") {
+  // Reactions are acknowledgments; system/ephemeral/unsupported are Meta
+  // notifications, not diner messages — none deserve a reply or a handoff.
+  // Everything else (text, media, location, stickers, contacts) enqueues;
+  // the worker answers readable text and hands non-text off to the owner.
+  if (SKIPPED_RAW_TYPES.has(inbound.rawType)) {
     return;
   }
 

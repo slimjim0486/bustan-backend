@@ -97,6 +97,18 @@ test("failed (orphaned) claims stop anchoring so their batch reopens", () => {
   );
 });
 
+test("failed owner sends do not answer diner messages", () => {
+  const batch = deriveUnansweredBatch([
+    msg({ id: "m1", direction: "inbound", source: "diner", seq: 1n }),
+    msg({ id: "owner-fail", direction: "outbound", source: "owner", seq: 2n, status: "failed" }),
+  ]);
+
+  assert.deepEqual(
+    batch.map((message) => message.id),
+    ["m1"]
+  );
+});
+
 test("legacy bot rows without answersUpToSeq anchor at their own seq", () => {
   const batch = deriveUnansweredBatch([
     msg({ id: "m1", direction: "inbound", source: "diner", seq: 1n }),

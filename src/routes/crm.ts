@@ -436,6 +436,10 @@ export const crmRoute = new Hono<{
           take: 10,
           include: {
             messages: {
+              // Bot claim rows are created before the reply text exists
+              // (status "queued", body null while the model composes) —
+              // hide them so the inbox never shows a blank bot bubble.
+              where: { NOT: { source: "bot", status: "queued" } },
               orderBy: {
                 createdAt: "desc",
               },
@@ -1088,7 +1092,13 @@ export const crmRoute = new Hono<{
         orderBy: { lastMessageAt: "desc" },
         take: limit,
         include: {
-          messages: { orderBy: { createdAt: "desc" }, take: 1 },
+          messages: {
+            // Same in-flight-claim filter as the summary payload: a blank
+            // "queued" bot row must not become the search preview.
+            where: { NOT: { source: "bot", status: "queued" } },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+          },
         },
       });
 
