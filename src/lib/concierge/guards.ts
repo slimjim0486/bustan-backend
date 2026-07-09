@@ -104,7 +104,9 @@ export function checkInputGuardrails(
         refusal:
           language === "ar"
             ? "أنا هنا لمساعدتك في قائمة الطعام. ما الطبق أو السؤال الغذائي الذي أستطيع مساعدتك به؟"
-            : "I'm Sous Chef. I'm here to help you explore the menu. What dish or dietary question can I help with?",
+            : channel === "whatsapp"
+              ? "I'm here to help you explore the menu. What dish or dietary question can I help with?"
+              : "I'm Sous Chef. I'm here to help you explore the menu. What dish or dietary question can I help with?",
       };
     }
   }
