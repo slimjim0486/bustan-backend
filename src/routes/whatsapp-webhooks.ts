@@ -16,6 +16,7 @@ import { captureException } from "@/lib/sentry";
 import { extractCtwaReferral } from "@/lib/ctwa-referral";
 import { resolveAdProjectByMetaAdId } from "@/lib/ctwa-resolver";
 import { getConciergeMonthlyCap, getConciergeUsageState } from "@/lib/concierge/usage";
+import { IGNORED_TYPES, MEDIA_TYPES } from "@/lib/concierge";
 import { enqueueDinerConciergeReply } from "@/queue/diner-concierge";
 import {
   detectOrderAction,
@@ -114,6 +115,36 @@ async function handleInboundMessage(input: {
   const occurredAt = toWebhookDate(input.message.timestamp);
   const displayName = sanitizeDisplayName(input.contactName, fromPhone);
   const consentCommand = getWhatsAppConsentCommand(body);
+  const providerMessageId = String(input.message.id);
+  const existingMessage = await prisma.whatsAppMessage.findUnique({
+    where: { providerMessageId },
+    select: {
+      id: true,
+      type: true,
+      createdAt: true,
+      conversationId: true,
+      conversation: {
+        select: {
+          botPausedUntil: true,
+          botDisabled: true,
+        },
+      },
+    },
+  });
+  if (existingMessage) {
+    return {
+      conversationId: existingMessage.conversationId,
+      botPausedUntil: existingMessage.conversation?.botPausedUntil ?? null,
+      botDisabled: existingMessage.conversation?.botDisabled ?? false,
+      messageId: existingMessage.id,
+      messageType: existingMessage.type,
+      occurredAt: existingMessage.createdAt,
+      language: detectedLanguage,
+      consentCommand,
+      body,
+      duplicate: true,
+    };
+  }
   // P1: Click-to-WhatsApp referral. Sanitized + capped here so the rest
   // of the transaction can trust the values without re-checking. PDPL —
   // never log headline/body in plaintext below.
@@ -297,6 +328,9 @@ async function handleInboundMessage(input: {
       messageType: message.type,
       occurredAt: message.createdAt,
       language: detectedLanguage,
+      consentCommand,
+      body,
+      duplicate: false,
     };
   });
 }
@@ -313,13 +347,22 @@ async function maybeEnqueueDinerConcierge(input: {
 }) {
   const restaurant = input.restaurant;
   const inbound = input.inbound;
-  if (!restaurant || !inbound || !restaurant.dinerAutoReplyEnabled) {
+  if (!restaurant || !inbound || !inbound.conversationId || !restaurant.dinerAutoReplyEnabled) {
+    return;
+  }
+  if (inbound.duplicate || inbound.consentCommand) {
     return;
   }
   if (inbound.botDisabled) {
     return;
   }
   if (inbound.botPausedUntil && inbound.botPausedUntil.getTime() > Date.now()) {
+    return;
+  }
+  if (IGNORED_TYPES.has(inbound.messageType)) {
+    return;
+  }
+  if (!MEDIA_TYPES.has(inbound.messageType) && !inbound.body?.trim()) {
     return;
   }
 
@@ -336,7 +379,7 @@ async function maybeEnqueueDinerConcierge(input: {
       triggerMessageId: inbound.messageId,
       triggerMessageAt: inbound.occurredAt.toISOString(),
       language: inbound.language,
-      escalateOnly: inbound.messageType !== "text",
+      escalateOnly: MEDIA_TYPES.has(inbound.messageType),
     });
   } catch (error) {
     captureException(error, {
@@ -558,11 +601,12 @@ export const whatsappWebhooksRoute = new Hono()
         for (const message of messages) {
           const contact = contacts.find((entry: Record<string, any>) => entry.wa_id === message.from);
           const fromPhone = normalizeE164Phone(String(message.from ?? ""));
-          const isOperator =
-            ordersEnabled &&
+          const isFromOperatorPhone = Boolean(
             operatorPhone &&
             fromPhone &&
-            fromPhone === operatorPhone;
+            fromPhone === operatorPhone
+          );
+          const isOperator = ordersEnabled && isFromOperatorPhone;
 
           // C2: handle "CONFIRM" verification keyword before any other
           // order routing. Verification is a one-time event; subsequent
@@ -584,7 +628,7 @@ export const whatsappWebhooksRoute = new Hono()
                 await sendWhatsAppText({
                   accessToken: decryptAccessToken(fullIntegration.accessTokenCipher),
                   phoneNumberId: fullIntegration.phoneNumberId,
-                  to: fromPhone,
+                  to: fromPhone as string,
                   body:
                     "Verified — this number is now the operator for Bustan orders. " +
                     "You'll receive order alerts here and can Accept / Reject by replying.",
@@ -693,7 +737,9 @@ export const whatsappWebhooksRoute = new Hono()
             message,
             contactName: contact?.profile?.name ?? null,
           });
-          await maybeEnqueueDinerConcierge({ restaurant, inbound });
+          if (!isFromOperatorPhone) {
+            await maybeEnqueueDinerConcierge({ restaurant, inbound });
+          }
         }
 
         for (const status of statuses) {

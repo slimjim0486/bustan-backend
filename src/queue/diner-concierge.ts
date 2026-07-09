@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import PgBoss from "pg-boss";
 import { buildPublicMenuItemWhere } from "@/lib/menu-visibility";
 import { prisma } from "@/lib/prisma";
@@ -9,6 +10,8 @@ import {
 import {
   fallbackMessage,
   handoffMessage,
+  IGNORED_TYPES,
+  MEDIA_TYPES,
   runConciergeTurn,
   type ConciergeLanguage,
 } from "@/lib/concierge";
@@ -54,6 +57,50 @@ function isActivePause(conversation: { botPausedUntil: Date | null }) {
   return Boolean(conversation.botPausedUntil && conversation.botPausedUntil.getTime() > Date.now());
 }
 
+type StoredConciergeMessage = {
+  id: string;
+  direction: "inbound" | "outbound";
+  source: string;
+  type: string;
+  body: string | null;
+  createdAt: Date;
+};
+
+export function deriveUnansweredBatch(messages: StoredConciergeMessage[]) {
+  const lastAnsweredAt = messages
+    .filter(
+      (message) =>
+        message.direction === "outbound" &&
+        (message.source === "bot" || message.source === "owner")
+    )
+    .reduce<Date | null>(
+      (latest, message) =>
+        !latest || message.createdAt > latest ? message.createdAt : latest,
+      null
+    );
+
+  return messages
+    .filter(
+      (message) =>
+        message.direction === "inbound" &&
+        message.source === "diner" &&
+        (!lastAnsweredAt || message.createdAt > lastAnsweredAt)
+    )
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+}
+
+function isSyntheticMediaBody(message: StoredConciergeMessage) {
+  const body = message.body?.trim();
+  return !body || body === `[${message.type} message]` || body === "[message]";
+}
+
+function messageBodyForConcierge(message: StoredConciergeMessage) {
+  const body = message.body?.trim();
+  if (!body || IGNORED_TYPES.has(message.type)) return null;
+  if (MEDIA_TYPES.has(message.type) && isSyntheticMediaBody(message)) return null;
+  return body;
+}
+
 export async function enqueueDinerConciergeReply(data: DinerConciergeJobData) {
   await ensureQueue();
   const queue = await getBoss();
@@ -66,11 +113,28 @@ export async function enqueueDinerConciergeReply(data: DinerConciergeJobData) {
       startAfter: new Date(Date.now() + DEBOUNCE_SECONDS * 1000),
       singletonKey: data.conversationId,
       singletonSeconds: DEBOUNCE_SECONDS,
+      singletonNextSlot: true,
     } as PgBoss.SendOptions
   );
 }
 
-async function sendAndRecord(input: {
+function isPrismaUniqueViolation(error: unknown) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+function replyIdempotencyKey(messageId: string, kind: "reply" | "fallback" = "reply") {
+  return `dc:${messageId}:${kind}`;
+}
+
+async function hasOutboundClaim(idempotencyKey: string) {
+  const existing = await prisma.whatsAppMessage.findUnique({
+    where: { idempotencyKey },
+    select: { id: true },
+  });
+  return Boolean(existing);
+}
+
+export async function sendAndRecord(input: {
   restaurantId: string;
   integrationId: string;
   accessTokenCipher: string;
@@ -81,51 +145,102 @@ async function sendAndRecord(input: {
   customerPhone: string;
   body: string;
   source: "bot" | "system";
+  idempotencyKey: string;
   pauseReason?: string | null;
   pauseUntil?: Date | null;
 }) {
   const sentAt = new Date();
-  const providerMessageId = await sendWhatsAppText({
-    accessToken: decryptAccessToken(input.accessTokenCipher),
-    phoneNumberId: input.phoneNumberId,
-    to: input.customerPhone,
-    body: input.body,
-  });
+  let claimId = "";
 
-  await prisma.$transaction(async (tx) => {
-    await tx.whatsAppMessage.create({
+  try {
+    const claim = await prisma.whatsAppMessage.create({
       data: {
         restaurantId: input.restaurantId,
         integrationId: input.integrationId,
         conversationId: input.conversationId,
         customerId: input.customerId,
-        providerMessageId,
+        idempotencyKey: input.idempotencyKey,
         direction: "outbound",
         type: "text",
-        status: "sent",
+        status: "queued",
         source: input.source,
         fromPhone: input.displayPhoneNumber,
         toPhone: input.customerPhone,
         body: input.body,
-        sentAt,
+      },
+      select: { id: true },
+    });
+    claimId = claim.id;
+  } catch (error) {
+    if (isPrismaUniqueViolation(error)) {
+      return;
+    }
+    throw error;
+  }
+
+  let providerMessageId: string;
+  try {
+    providerMessageId = await sendWhatsAppText({
+      accessToken: decryptAccessToken(input.accessTokenCipher),
+      phoneNumberId: input.phoneNumberId,
+      to: input.customerPhone,
+      body: input.body,
+    });
+  } catch (error) {
+    await prisma.whatsAppMessage
+      .delete({ where: { id: claimId } })
+      .catch((deleteError) => {
+        captureException(deleteError, {
+          tags: { job: DINER_CONCIERGE_JOB, phase: "delete_failed_send_claim" },
+          extra: { idempotencyKey: input.idempotencyKey, claimId },
+        });
+      });
+    throw error;
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.whatsAppMessage.update({
+        where: { id: claimId },
+        data: {
+          providerMessageId,
+          status: "sent",
+          sentAt,
+        },
+      });
+
+      await tx.whatsAppConversation.update({
+        where: { id: input.conversationId },
+        data: {
+          lastMessageAt: sentAt,
+          ...(input.pauseUntil
+            ? {
+                botPausedUntil: input.pauseUntil,
+                botPausedReason: input.pauseReason,
+              }
+            : {}),
+        },
+      });
+    });
+  } catch (error) {
+    captureException(error, {
+      tags: { job: DINER_CONCIERGE_JOB, phase: "post_send_bookkeeping" },
+      extra: {
+        idempotencyKey: input.idempotencyKey,
+        claimId,
+        providerMessageId,
       },
     });
+  }
 
-    await tx.whatsAppConversation.update({
-      where: { id: input.conversationId },
-      data: {
-        lastMessageAt: sentAt,
-        ...(input.pauseUntil
-          ? {
-              botPausedUntil: input.pauseUntil,
-              botPausedReason: input.pauseReason,
-            }
-          : {}),
-      },
+  try {
+    await incrementConciergeUsage(input.restaurantId);
+  } catch (error) {
+    captureException(error, {
+      tags: { job: DINER_CONCIERGE_JOB, phase: "usage_increment" },
+      extra: { idempotencyKey: input.idempotencyKey, claimId },
     });
-  });
-
-  await incrementConciergeUsage(input.restaurantId);
+  }
 }
 
 async function loadConversationForJob(job: DinerConciergeJobData) {
@@ -168,6 +283,11 @@ async function loadConversationForJob(job: DinerConciergeJobData) {
               },
             },
           },
+        },
+      },
+      customer: {
+        select: {
+          preferredLanguage: true,
         },
       },
       messages: {
@@ -227,31 +347,32 @@ async function processConciergeJob(job: ConciergeWorkerJob) {
     return;
   }
 
-  const triggerAt = new Date(data.triggerMessageAt);
-  const ownerAfterTrigger = conversation.messages.some(
-    (message) => message.source === "owner" && message.createdAt > triggerAt
-  );
-  if (ownerAfterTrigger) {
+  const unanswered = deriveUnansweredBatch(conversation.messages);
+  if (unanswered.length === 0) {
     return;
   }
 
-  const latestInbound = conversation.messages.find(
-    (message) => message.direction === "inbound" && message.source === "diner"
-  );
-  if (!latestInbound) {
+  const firstUnanswered = unanswered[0];
+  const lastUnanswered = unanswered[unanswered.length - 1];
+  const idempotencyKey = replyIdempotencyKey(lastUnanswered.id);
+  if (await hasOutboundClaim(idempotencyKey)) {
     return;
   }
 
-  const botAfterLatestInbound = conversation.messages.some(
-    (message) =>
-      message.source === "bot" &&
-      message.createdAt > latestInbound.createdAt
+  const ownerAfterFirstUnanswered = conversation.messages.some(
+    (message) => message.source === "owner" && message.createdAt > firstUnanswered.createdAt
   );
-  if (botAfterLatestInbound) {
+  if (ownerAfterFirstUnanswered) {
     return;
   }
 
-  if (data.escalateOnly) {
+  const mediaMessages = unanswered.filter((message) => MEDIA_TYPES.has(message.type));
+  const textBodies = unanswered
+    .map(messageBodyForConcierge)
+    .filter((body): body is string => Boolean(body));
+  const language = conversation.customer?.preferredLanguage ?? data.language;
+
+  if (mediaMessages.length > 0 && textBodies.length === 0) {
     await sendAndRecord({
       restaurantId: conversation.restaurantId,
       integrationId: conversation.integration.id,
@@ -261,35 +382,50 @@ async function processConciergeJob(job: ConciergeWorkerJob) {
       conversationId: conversation.id,
       customerId: conversation.customerId,
       customerPhone: conversation.customerPhone,
-      body: handoffMessage(data.language),
+      body: handoffMessage(language),
       source: "bot",
+      idempotencyKey,
       pauseUntil: new Date(Date.now() + 24 * 60 * 60 * 1000),
       pauseReason: "agent_escalated",
     });
     return;
   }
 
+  if (textBodies.length === 0) {
+    return;
+  }
+
+  const unansweredIds = new Set(unanswered.map((message) => message.id));
   const recentMessages = conversation.messages
     .slice()
     .reverse()
+    .filter((message) => !unansweredIds.has(message.id))
+    .filter((message) => messageBodyForConcierge(message))
     .slice(-20)
-    .filter((message) => message.body?.trim())
     .map((message) => ({
       role: message.direction === "inbound" ? ("user" as const) : ("assistant" as const),
-      content: message.body as string,
+      content: messageBodyForConcierge(message) as string,
     }));
+
+  const messageText = [
+    textBodies.join("\n"),
+    mediaMessages.length > 0
+      ? "The diner also sent an attachment that cannot be inspected here."
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   const restaurant = {
     ...conversation.restaurant,
     recentOrders: await recentOrdersForPhone(conversation.restaurantId, conversation.customerPhone),
   };
-  const latestText = latestInbound.body ?? "";
   const turn = await runConciergeTurn({
     restaurant,
     channel: "whatsapp",
-    message: latestText,
+    message: messageText,
     history: recentMessages,
-    language: data.language,
+    language,
     customerPhone: conversation.customerPhone,
   });
 
@@ -303,8 +439,9 @@ async function processConciergeJob(job: ConciergeWorkerJob) {
     conversationId: conversation.id,
     customerId: conversation.customerId,
     customerPhone: conversation.customerPhone,
-    body: shouldEscalate ? turn.reply || handoffMessage(data.language) : turn.reply,
+    body: shouldEscalate ? turn.reply || handoffMessage(language) : turn.reply,
     source: "bot",
+    idempotencyKey,
     pauseUntil: shouldEscalate ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null,
     pauseReason: shouldEscalate ? "agent_escalated" : null,
   });
@@ -315,6 +452,9 @@ async function processConciergeJob(job: ConciergeWorkerJob) {
     outcome: turn.action,
     inputTokens: turn.inputTokens,
     outputTokens: turn.outputTokens,
+    cacheReadInputTokens: turn.cacheReadInputTokens,
+    cacheCreationInputTokens: turn.cacheCreationInputTokens,
+    unansweredCount: unanswered.length,
   });
 }
 
@@ -329,6 +469,13 @@ async function sendFinalFallback(job: ConciergeWorkerJob, error: unknown) {
     return;
   }
 
+  const unanswered = deriveUnansweredBatch(conversation.messages);
+  const anchorMessageId = unanswered.at(-1)?.id ?? job.data.triggerMessageId;
+  const replyKey = replyIdempotencyKey(anchorMessageId);
+  if (await hasOutboundClaim(replyKey)) {
+    return;
+  }
+
   try {
     await sendAndRecord({
       restaurantId: conversation.restaurantId,
@@ -339,8 +486,9 @@ async function sendFinalFallback(job: ConciergeWorkerJob, error: unknown) {
       conversationId: conversation.id,
       customerId: conversation.customerId,
       customerPhone: conversation.customerPhone,
-      body: fallbackMessage(job.data.language),
+      body: fallbackMessage(conversation.customer?.preferredLanguage ?? job.data.language),
       source: "bot",
+      idempotencyKey: replyIdempotencyKey(anchorMessageId, "fallback"),
       pauseUntil: new Date(Date.now() + 24 * 60 * 60 * 1000),
       pauseReason: "agent_escalated",
     });

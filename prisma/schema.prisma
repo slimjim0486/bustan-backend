@@ -1066,6 +1066,7 @@ model WhatsAppMessage {
   customerId        String?                  @map("customer_id")
   messageLogId      String?                  @unique @map("message_log_id")
   providerMessageId String?                  @unique @map("provider_message_id")
+  idempotencyKey    String?                  @unique @map("idempotency_key")
   direction         WhatsAppMessageDirection
   type              WhatsAppMessageType      @default(text)
   status            WhatsAppMessageStatus    @default(received)

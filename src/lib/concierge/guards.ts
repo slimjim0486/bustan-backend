@@ -29,9 +29,12 @@ export const OFFTOPIC_PATTERNS = [
 ];
 
 const HUMAN_REQUEST_PATTERNS = [
-  /\b(human|person|manager|owner|staff|representative|agent|someone)\b/i,
-  /\b(call me|talk to|speak to|complaint|refund|cancel my order)\b/i,
-  /(?:انسان|موظف|مدير|شخص|مندوب|اتكلم|أكلم|اكلم|شكوى|استرجاع|استرداد|الغاء|إلغاء)/i,
+  /\b(?:speak|talk|chat|connect)\s+(?:to|with)\s+(?:a\s+)?(?:human|person|manager|owner|staff|representative|agent|someone)\b/i,
+  /\b(?:can|could|may)\s+i\s+(?:speak|talk|chat)\s+(?:to|with)\s+(?:a\s+)?(?:human|person|manager|owner|staff|representative|agent|someone)\b/i,
+  /\b(?:call me|phone me|have someone call|need a human|real person|human agent|customer service)\b/i,
+  /\b(?:complaint|refund|cancel my order|wrong order|missing item)\b/i,
+  /(?:اتكلم|أكلم|اكلم)\s+(?:مع\s+)?(?:إنسان|انسان|موظف|مدير|شخص|مندوب)/i,
+  /(?:شكوى|استرجاع|استرداد|الغاء|إلغاء\s+طلبي)/i,
 ];
 
 export type GuardResult =
@@ -48,6 +51,12 @@ export function fallbackMessage(language?: ConciergeLanguage) {
   return language === "ar"
     ? "شكراً لرسالتك. سيرد عليك الفريق قريباً."
     : "Thanks for your message. The team will get back to you shortly.";
+}
+
+export function webEscalationMessage(language?: ConciergeLanguage) {
+  return language === "ar"
+    ? "لا أستطيع إكمال هذا من الدردشة هنا. يرجى التواصل مع المطعم مباشرة."
+    : "I can't handle that from this chat. Please contact the restaurant directly.";
 }
 
 export function checkInputGuardrails(

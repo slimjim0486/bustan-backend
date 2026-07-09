@@ -8,11 +8,34 @@ import {
 import { getConciergeMonthlyCap } from "@/lib/concierge/usage";
 
 test("WhatsApp human requests escalate instead of using the model", () => {
-  const result = checkInputGuardrails("Can I speak to a manager?", "en", "whatsapp");
-  assert.equal(result.allowed, false);
-  if (!result.allowed) {
-    assert.equal(result.action, "escalate");
-    assert.equal(result.reason, "human_request");
+  const messages = [
+    "Can I speak to a manager?",
+    "I need a human agent please",
+    "wrong order",
+    "اتكلم مع موظف",
+  ];
+
+  for (const message of messages) {
+    const result = checkInputGuardrails(message, "en", "whatsapp");
+    assert.equal(result.allowed, false, message);
+    if (!result.allowed) {
+      assert.equal(result.action, "escalate", message);
+      assert.equal(result.reason, "human_request", message);
+    }
+  }
+});
+
+test("WhatsApp human guard does not escalate normal menu phrases", () => {
+  const messages = [
+    "Do you have humanely raised chicken?",
+    "What is the owner's favorite dish?",
+    "Is this enough food for one person?",
+    "Can someone explain the mezze platter ingredients?",
+  ];
+
+  for (const message of messages) {
+    const result = checkInputGuardrails(message, "en", "whatsapp");
+    assert.equal(result.allowed, true, message);
   }
 });
 

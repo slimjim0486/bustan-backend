@@ -6,6 +6,7 @@ import {
   checkInputGuardrails,
   handoffMessage,
   parseConciergeAction,
+  webEscalationMessage,
   wrapDinerMessage,
 } from "@/lib/concierge/guards";
 import { buildConciergeSystemPrompt } from "@/lib/concierge/system-prompt";
@@ -29,14 +30,34 @@ function getClient() {
   return anthropic;
 }
 
-function prepareMessages(options: ConciergeTurnOptions): MessageParam[] {
-  return [
+export function prepareMessages(options: ConciergeTurnOptions): MessageParam[] {
+  const rawMessages = [
     ...(options.history ?? []).map((msg) => ({
       role: msg.role,
       content: msg.role === "user" ? wrapDinerMessage(msg.content) : msg.content,
     })),
     { role: "user" as const, content: wrapDinerMessage(options.message) },
   ];
+
+  const normalized: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const message of rawMessages) {
+    const content = message.content.trim();
+    if (!content) continue;
+
+    const previous = normalized.at(-1);
+    if (previous?.role === message.role) {
+      previous.content = `${previous.content}\n\n${content}`;
+      continue;
+    }
+
+    normalized.push({ role: message.role, content });
+  }
+
+  while (normalized[0]?.role === "assistant") {
+    normalized.shift();
+  }
+
+  return normalized;
 }
 
 export async function runConciergeTurn(
@@ -49,6 +70,8 @@ export async function runConciergeTurn(
       reply: guard.refusal,
       inputTokens: 0,
       outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
     };
   }
 
@@ -62,6 +85,8 @@ export async function runConciergeTurn(
 
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadInputTokens = 0;
+  let totalCacheCreationInputTokens = 0;
   let iterations = 0;
   let finalText = "";
 
@@ -70,7 +95,13 @@ export async function runConciergeTurn(
       getClient(),
       {
         max_tokens: 512,
-        system,
+        system: [
+          {
+            type: "text",
+            text: system,
+            cache_control: { type: "ephemeral" },
+          },
+        ],
         tools,
         messages,
       },
@@ -83,6 +114,12 @@ export async function runConciergeTurn(
 
     totalInputTokens += response.usage.input_tokens;
     totalOutputTokens += response.usage.output_tokens;
+    const usage = response.usage as Anthropic.Messages.Usage & {
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+    totalCacheReadInputTokens += usage.cache_read_input_tokens ?? 0;
+    totalCacheCreationInputTokens += usage.cache_creation_input_tokens ?? 0;
 
     const textParts = response.content
       .filter((block): block is TextBlock => block.type === "text")
@@ -130,8 +167,12 @@ export async function runConciergeTurn(
   }
 
   const parsed = parseConciergeAction(finalText);
+  const escalationFallback =
+    options.channel === "whatsapp"
+      ? handoffMessage(options.language)
+      : webEscalationMessage(options.language);
   const reply = parsed.action === "escalate" && !parsed.reply
-    ? handoffMessage(options.language)
+    ? escalationFallback
     : parsed.reply;
 
   return {
@@ -139,6 +180,8 @@ export async function runConciergeTurn(
     reply,
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
+    cacheReadInputTokens: totalCacheReadInputTokens,
+    cacheCreationInputTokens: totalCacheCreationInputTokens,
   };
 }
 

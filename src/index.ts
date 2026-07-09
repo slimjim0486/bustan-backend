@@ -26,7 +26,6 @@ import { startEventStagerWorker } from "@/queue/event-stager";
 import { startCompetitorIntelWorker } from "@/queue/competitor-intel";
 import { startCoworkerDailyBriefWorker } from "@/queue/coworker-daily-brief";
 import { startDraftShipWorker } from "@/queue/draft-ship";
-import { startDinerConciergeWorker } from "@/queue/diner-concierge";
 import { adStudioRoute, adStudioPublicRoute } from "@/routes/ad-studio";
 import { sabtPackRoute, sabtPackAdminRoute } from "@/routes/sabt-pack";
 import { marketPulseRoute } from "@/routes/market-pulse";
@@ -249,12 +248,4 @@ startDraftShipWorker()
   })
   .catch((error) => {
     console.error("pg-boss draft-ship worker failed to start", error);
-  });
-
-startDinerConciergeWorker()
-  .then(() => {
-    console.log("pg-boss diner-concierge worker started");
-  })
-  .catch((error) => {
-    console.error("pg-boss diner-concierge worker failed to start", error);
   });

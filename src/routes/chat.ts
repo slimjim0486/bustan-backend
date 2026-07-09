@@ -17,7 +17,7 @@ import {
   assertRateLimit,
   getClientIp,
 } from "@/lib/public-request-guards";
-import { runConciergeTurn } from "@/lib/concierge";
+import { runConciergeTurn, webEscalationMessage } from "@/lib/concierge";
 import { createSousChefMessage } from "@/services/anthropic-models";
 import {
   type BustanKbTopic,
@@ -696,7 +696,9 @@ export const chatRoute = new Hono().post("/:restaurantId", async (c) => {
       turn.outputTokens
     );
 
-    return c.json({ reply: turn.reply });
+    return c.json({
+      reply: turn.action === "escalate" ? webEscalationMessage() : turn.reply,
+    });
   } catch (error) {
     return errorResponse(c, error);
   }
