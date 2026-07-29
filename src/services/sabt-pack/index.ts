@@ -32,7 +32,7 @@ import { buildSlideshowFrames } from "@/services/ad-studio-ai/slideshow-composit
 import {
   pickSlideshowDishes,
   SLIDESHOW_FRAME_COUNT,
-} from "@/services/ad-studio-ai/slideshow-dish-picker";
+} from "@/lib/archived-feature-guards";
 import type {
   AdStudioBrief,
   CopyVariant,

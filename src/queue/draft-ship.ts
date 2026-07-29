@@ -6,7 +6,7 @@
 // actionType.
 
 import PgBoss from "pg-boss";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 import { shipDraft } from "@/services/draft-actions";
 
 export const DRAFT_SHIP_JOB = "draft-ship";

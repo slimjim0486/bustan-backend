@@ -21,7 +21,7 @@ import {
   type CreativeFormat,
 } from "@/services/ad-studio-ai/brief-builder";
 import { syncLiveCampaignFromMeta } from "@/services/meta-ads-oauth";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 
 export const AD_STUDIO_JOB = "ad-studio-generation";
 export const AD_STUDIO_REGEN_IMAGE_JOB = "ad-studio-regenerate-image";

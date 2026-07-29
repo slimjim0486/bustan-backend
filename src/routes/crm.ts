@@ -28,7 +28,6 @@ import {
   sendWhatsAppTemplate,
   subscribeWhatsAppBusinessAccount,
 } from "@/lib/whatsapp-business";
-import { ORDER_TEMPLATE_DEFINITIONS } from "@/lib/whatsapp-order-templates";
 import { marketingEligibleWhere } from "@/lib/marketing-eligibility";
 import {
   executeCampaignSend,
@@ -36,7 +35,6 @@ import {
   renderNumberedTemplateBody,
 } from "@/services/campaign-send";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
-import { getConciergeMonthlyCap, getConciergeUsageState } from "@/lib/concierge/usage";
 import { requireAuth } from "@/middleware/auth";
 
 // Re-exported so existing consumers (and tests) can keep importing it from
@@ -120,6 +118,31 @@ const templateSubmitSchema = z.object({
 const dinerAutoReplySchema = z.object({
   enabled: z.boolean(),
 });
+
+const ORDER_TEMPLATE_DEFINITIONS: Array<{
+  name: string;
+  label: string;
+  category: string;
+  language: string;
+  body: string;
+  variables: string[];
+  footer?: string;
+}> = [];
+
+function getConciergeMonthlyCap(..._args: unknown[]) {
+  return 0;
+}
+
+async function getConciergeUsageState(..._args: unknown[]) {
+  return {
+    month: new Date().toISOString().slice(0, 7),
+    repliesSent: 0,
+    cap: 0,
+    remaining: 0,
+    warning: false,
+    allowed: false,
+  };
+}
 
 const conversationBotToggleSchema = z.object({
   disabled: z.boolean(),

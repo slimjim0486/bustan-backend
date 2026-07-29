@@ -12,10 +12,8 @@ import { logger } from "hono/logger";
 import { env } from "@/lib/env";
 import { initSentry } from "@/lib/sentry";
 import { seedReferenceData } from "@/lib/startup-seed";
-import { startMenuImageWorker } from "@/queue/image-generation";
 import { startAdStudioWorker } from "@/queue/ad-studio-jobs";
 import { startWhatsAppRetentionWorker } from "@/queue/whatsapp-retention";
-import { startOrderIntentExpiryWorker } from "@/queue/order-intent-expiry";
 import { startOwnerChatMemoryWorker } from "@/queue/owner-chat-memory";
 import { startOwnerWhisperWorker } from "@/queue/owner-whisper";
 import { startWeeklyReportWorker } from "@/queue/weekly-report";
@@ -26,22 +24,12 @@ import { startEventStagerWorker } from "@/queue/event-stager";
 import { startCompetitorIntelWorker } from "@/queue/competitor-intel";
 import { startCoworkerDailyBriefWorker } from "@/queue/coworker-daily-brief";
 import { startDraftShipWorker } from "@/queue/draft-ship";
-import { startDinerConciergeWorker } from "@/queue/diner-concierge";
 import { adStudioRoute, adStudioPublicRoute } from "@/routes/ad-studio";
 import { sabtPackRoute, sabtPackAdminRoute } from "@/routes/sabt-pack";
 import { marketPulseRoute } from "@/routes/market-pulse";
 import { adminRoute } from "@/routes/admin";
 import { analyticsRoute } from "@/routes/analytics";
-import { auditRoute } from "@/routes/audit";
-import { aiRoute } from "@/routes/ai";
-import { aiFeaturesRoute } from "@/routes/ai-features";
-import { chatRoute } from "@/routes/chat";
 import { crmRoute } from "@/routes/crm";
-import { dietaryTagsRoute } from "@/routes/dietary-tags";
-import { menuBadgesRoute } from "@/routes/menu-badges";
-import { menuRoute } from "@/routes/menu";
-import { menuSourceImagesRoute } from "@/routes/menu-source-images";
-import { previewRoute } from "@/routes/preview";
 import { portfolioRoute } from "@/routes/portfolio";
 import { restaurantsRoute } from "@/routes/restaurants";
 import { shortLinksRoute } from "@/routes/short-links";
@@ -52,10 +40,7 @@ import { gbpRoute } from "@/routes/gbp";
 import { gscRoute } from "@/routes/gsc";
 import { seoRoute } from "@/routes/seo";
 import { ownerChatRoute } from "@/routes/owner-chat";
-import { menuPrintRoute, pdfExportRoute } from "@/routes/pdf-export";
-import { whatsappRoute } from "@/routes/whatsapp";
 import { whatsappWebhooksRoute } from "@/routes/whatsapp-webhooks";
-import { ordersRoute, ordersAdminRoute } from "@/routes/orders";
 import { metaDataDeletionRoute } from "@/routes/meta-data-deletion";
 import { clerkWebhooksRoute } from "@/routes/clerk-webhooks";
 import { coworkerRoute } from "@/routes/coworker";
@@ -83,32 +68,18 @@ app.route("/api/restaurants", restaurantsRoute);
 app.route("/api/admin", adminRoute);
 app.route("/api/portfolio", portfolioRoute);
 app.route("/api/short-links", shortLinksRoute);
-app.route("/api/preview", previewRoute);
-app.route("/api/menu", menuRoute);
-app.route("/api/menu", aiRoute);
-app.route("/api/menu-source-images", menuSourceImagesRoute);
-app.route("/api/chat", chatRoute);
 app.route("/api/crm", crmRoute);
 app.route("/api/support", supportRoute);
 app.route("/api/owner-chat", ownerChatRoute);
-app.route("/api/ai", aiFeaturesRoute);
-app.route("/api/dietary-tags", dietaryTagsRoute);
-app.route("/api/menu-badges", menuBadgesRoute);
 app.route("/api/subscriptions", subscriptionsRoute);
 app.route("/api/analytics", analyticsRoute);
-app.route("/api/audit", auditRoute);
 app.route("/api/upload", uploadRoute);
-app.route("/api/whatsapp", whatsappRoute);
-app.route("/api/orders", ordersRoute);
-app.route("/api/orders/admin", ordersAdminRoute);
 app.route("/api/webhooks", whatsappWebhooksRoute);
 app.route("/api/webhooks", metaDataDeletionRoute);
 app.route("/api/webhooks/clerk", clerkWebhooksRoute);
 app.route("/api/gbp", gbpRoute);
 app.route("/api/gsc", gscRoute);
 app.route("/api/seo", seoRoute);
-app.route("/api/menu-print", menuPrintRoute);
-app.route("/api/pdf-export", pdfExportRoute);
 app.route("/api/ad-studio-public", adStudioPublicRoute);
 app.route("/api/ad-studio", adStudioRoute);
 app.route("/api/sabt-pack", sabtPackRoute);
@@ -138,15 +109,6 @@ seedReferenceData()
     console.error("Reference data seeding failed", error);
   });
 
-// Start the pg-boss worker inline so image generation jobs are processed
-startMenuImageWorker()
-  .then(() => {
-    console.log("pg-boss image worker started");
-  })
-  .catch((error) => {
-    console.error("pg-boss worker failed to start", error);
-  });
-
 startAdStudioWorker()
   .then(() => {
     console.log("pg-boss ad-studio worker started");
@@ -161,14 +123,6 @@ startWhatsAppRetentionWorker()
   })
   .catch((error) => {
     console.error("pg-boss whatsapp-retention worker failed to start", error);
-  });
-
-startOrderIntentExpiryWorker()
-  .then(() => {
-    console.log("pg-boss order-intent-expiry worker started");
-  })
-  .catch((error) => {
-    console.error("pg-boss order-intent-expiry worker failed to start", error);
   });
 
 startOwnerChatMemoryWorker()
@@ -249,16 +203,4 @@ startDraftShipWorker()
   })
   .catch((error) => {
     console.error("pg-boss draft-ship worker failed to start", error);
-  });
-
-// Registered here like every other worker so the queue always has a live
-// consumer (no separate worker service is deployed). The dedicated
-// entrypoint in src/queue/worker.ts may ALSO run: the per-conversation
-// advisory lock + claim rows make multiple consumers safe.
-startDinerConciergeWorker()
-  .then(() => {
-    console.log("pg-boss diner-concierge worker started");
-  })
-  .catch((error) => {
-    console.error("pg-boss diner-concierge worker failed to start", error);
   });

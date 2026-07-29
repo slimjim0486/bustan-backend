@@ -1,4 +1,4 @@
-import { buildPublicMenuItemWhere } from "@/lib/menu-visibility";
+import { buildPublicMenuItemWhere } from "@/lib/dormant-menu-query";
 
 export function buildPromotionInclude(options?: {
   availableOnly?: boolean;

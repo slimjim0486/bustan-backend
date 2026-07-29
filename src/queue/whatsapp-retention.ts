@@ -7,7 +7,7 @@
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 
 export const WHATSAPP_RETENTION_JOB = "whatsapp-retention-sweep";
 const RETENTION_DAYS = 30;

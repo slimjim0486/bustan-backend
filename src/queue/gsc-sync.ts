@@ -8,7 +8,7 @@ import { Prisma } from "@prisma/client";
 import { isGscConfigured, querySearchAnalytics } from "@/services/gsc/client";
 import { prisma } from "@/lib/prisma";
 import { captureException, captureMessage } from "@/lib/sentry";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 
 export const GSC_SYNC_JOB = "gsc-sync";
 

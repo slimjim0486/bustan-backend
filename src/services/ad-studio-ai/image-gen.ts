@@ -16,7 +16,7 @@ import { prisma } from "@/lib/prisma";
 import { generateDishImage } from "@/services/google-image";
 import { generateOpenAiImage } from "@/services/openai-image";
 import { uploadBuffer } from "@/services/r2";
-import { pickHeroDishForRestaurant } from "./hero-dish-picker";
+import { pickHeroDishForRestaurant } from "@/lib/archived-feature-guards";
 import type { ImageGenResult, ImageProvider } from "./types";
 
 interface ImageGenInput {

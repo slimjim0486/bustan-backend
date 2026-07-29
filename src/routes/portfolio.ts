@@ -7,7 +7,6 @@ import { errorResponse } from "@/lib/http";
 import { prisma } from "@/lib/prisma";
 import { slugify } from "@/lib/slug";
 import { requireAuth, getCurrentUser } from "@/middleware/auth";
-import { cloneMenu, cloneSection } from "@/services/menu-cloner";
 import { generatePortfolioQrCode } from "@/services/qr-generator";
 import { updatePortfolioSubscriptionQuantity } from "@/services/stripe";
 
@@ -27,15 +26,6 @@ const createBrandSchema = z.object({
   coverImageUrl: z.string().url().nullable().optional(),
   cloneFromRestaurantId: z.string().cuid().nullable().optional(),
 });
-
-const cloneSchema = z.object({
-  sourceRestaurantId: z.string().cuid().optional(),
-  sourceSectionId: z.string().cuid().optional(),
-  replaceExisting: z.boolean().optional(),
-}).refine(
-  (value) => Boolean(value.sourceRestaurantId || value.sourceSectionId),
-  "Provide a source restaurant or section to clone."
-);
 
 const qrQuerySchema = z.object({
   format: z.enum(["svg", "png"]).default("svg"),
@@ -222,10 +212,6 @@ export const portfolioRoute = new Hono<{
           },
         },
       });
-
-      if (data.cloneFromRestaurantId) {
-        await cloneMenu(data.cloneFromRestaurantId, restaurant.id, operator.id, false);
-      }
 
       const refreshedOperator = await getOperatorAccountForClerk(auth.clerkId);
       await syncPortfolioBrandQuantity(refreshedOperator);
@@ -445,32 +431,6 @@ export const portfolioRoute = new Hono<{
         brands,
         topItems,
       });
-    } catch (error) {
-      return errorResponse(c, error);
-    }
-  })
-  .post("/brands/:id/clone", requireAuth, async (c) => {
-    try {
-      const auth = c.get("auth");
-      const operator = await getOperatorAccountForClerk(auth.clerkId);
-      assertPortfolioReady(operator);
-      const targetRestaurantId = c.req.param("id");
-      const data = cloneSchema.parse(await c.req.json());
-
-      if (!operator.brands.some((brand) => brand.id === targetRestaurantId)) {
-        throw new ApiError("Target brand not found", 404);
-      }
-
-      const result = data.sourceSectionId
-        ? await cloneSection(data.sourceSectionId, targetRestaurantId, operator.id)
-        : await cloneMenu(
-            data.sourceRestaurantId!,
-            targetRestaurantId,
-            operator.id,
-            data.replaceExisting ?? false
-          );
-
-      return c.json(result);
     } catch (error) {
       return errorResponse(c, error);
     }

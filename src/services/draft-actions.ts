@@ -14,7 +14,13 @@ import { prisma } from "@/lib/prisma";
 import type { AutonomyTier } from "@/services/agent/autonomy-tiers";
 import type { AgentChannel } from "@/services/agent/idempotency";
 import { executeCampaignSend } from "@/services/campaign-send";
-import { deleteEmptyPromotions } from "@/routes/menu";
+import {
+  deleteEmptyPromotions,
+  enqueueMenuItemImage,
+  ensurePrimaryImageRecord,
+  getNextImageSlot,
+  syncMenuItemImageSummary,
+} from "@/lib/archived-feature-guards";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { briefInputSchema } from "@/services/ad-studio-ai";
 import {
@@ -23,12 +29,6 @@ import {
 } from "@/services/ad-studio-ai/guards";
 import { enqueueAdStudioGeneration } from "@/queue/ad-studio-jobs";
 import { checkAiLimit, logAiUsage } from "@/lib/ai-usage";
-import { enqueueMenuItemImage } from "@/queue/image-generation";
-import {
-  ensurePrimaryImageRecord,
-  getNextImageSlot,
-  syncMenuItemImageSummary,
-} from "@/lib/menu-item-images";
 
 // 14-day TTL for drafts that sit in pending without a decision.
 const DEFAULT_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -1634,7 +1634,7 @@ async function shipDishImagesGenerate(draft: DraftAction): Promise<ShipResult> {
       const image = await prisma.$transaction(async (tx) => {
         const prepared = await ensurePrimaryImageRecord(tx, item.id);
         const images = prepared?.images ?? [];
-        if (images.some((img) => img.imageStatus === "none" || img.imageStatus === "generating")) {
+        if (images.some((img: { imageStatus: string }) => img.imageStatus === "none" || img.imageStatus === "generating")) {
           return null; // generation already pending — skip, not an error
         }
         const nextSlot = getNextImageSlot(images);

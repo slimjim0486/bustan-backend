@@ -9,7 +9,7 @@
 import PgBoss from "pg-boss";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 import {
   loadDailyBriefInputs,
   planDailyBrief,

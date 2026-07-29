@@ -15,15 +15,6 @@ import { detectLanguage } from "@/lib/language-detect";
 import { captureException } from "@/lib/sentry";
 import { extractCtwaReferral } from "@/lib/ctwa-referral";
 import { resolveAdProjectByMetaAdId } from "@/lib/ctwa-resolver";
-import { getConciergeMonthlyCap, getConciergeUsageState } from "@/lib/concierge/usage";
-import { isConsentOnlyKeyword } from "@/lib/concierge";
-import { enqueueDinerConciergeReply } from "@/queue/diner-concierge";
-import {
-  detectOrderAction,
-  findOldestPendingOrderForRestaurant,
-  findPendingOrderByNumber,
-  transitionOrder,
-} from "@/lib/order-state-machine";
 
 /**
  * H7 fix: cap webhook-supplied display names to prevent stored-XSS surfaces
@@ -337,77 +328,6 @@ async function handleInboundMessage(input: {
   });
 }
 
-const SKIPPED_RAW_TYPES = new Set([
-  "reaction",
-  "system",
-  "ephemeral",
-  "unsupported",
-  "request_welcome",
-]);
-
-async function maybeEnqueueDinerConcierge(input: {
-  restaurant: {
-    id: string;
-    dinerAutoReplyEnabled: boolean;
-    subscriptionStatus: string;
-    subscription: { plan: any } | null;
-    operatorAccount: { status: string } | null;
-  } | null;
-  inbound: Awaited<ReturnType<typeof handleInboundMessage>>;
-}) {
-  const restaurant = input.restaurant;
-  const inbound = input.inbound;
-  if (!restaurant || !inbound || !inbound.conversationId || !restaurant.dinerAutoReplyEnabled) {
-    return;
-  }
-  if (inbound.duplicate) {
-    return;
-  }
-  // Bare consent keywords (STOP/START/subscribe/...) are commands to the
-  // consent system, not questions; "yes"/"cancel" stay conversational.
-  if (isConsentOnlyKeyword(inbound.body)) {
-    return;
-  }
-  if (inbound.botDisabled) {
-    return;
-  }
-  if (inbound.botPausedUntil && inbound.botPausedUntil.getTime() > Date.now()) {
-    return;
-  }
-  // Reactions are acknowledgments; system/ephemeral/unsupported are Meta
-  // notifications, not diner messages — none deserve a reply or a handoff.
-  // Everything else (text, media, location, stickers, contacts) enqueues;
-  // the worker answers readable text and hands non-text off to the owner.
-  if (SKIPPED_RAW_TYPES.has(inbound.rawType)) {
-    return;
-  }
-
-  const cap = getConciergeMonthlyCap(restaurant);
-  const usage = await getConciergeUsageState(restaurant.id, cap);
-  if (!usage.allowed) {
-    return;
-  }
-
-  try {
-    await enqueueDinerConciergeReply({
-      restaurantId: restaurant.id,
-      conversationId: inbound.conversationId,
-      triggerMessageId: inbound.messageId,
-      triggerMessageAt: inbound.occurredAt.toISOString(),
-      language: inbound.language,
-    });
-  } catch (error) {
-    captureException(error, {
-      tags: { feature: "diner-concierge", phase: "enqueue" },
-      extra: {
-        restaurantId: restaurant.id,
-        conversationId: inbound.conversationId,
-        messageId: inbound.messageId,
-      },
-    });
-  }
-}
-
 async function handleStatus(input: {
   integration: {
     id: string;
@@ -673,88 +593,11 @@ export const whatsappWebhooksRoute = new Hono()
             continue;
           }
 
-          if (isOperator && operatorVerified) {
-            const detected = detectOrderAction(message);
-            if (detected) {
-              // H2 fix: dedup BEFORE transitioning. Meta retries the same
-              // payload on transient failures; without this, two retries
-              // of the same Accept tap can accept two different orders
-              // (each iteration finds the next-oldest pending).
-              const providerMessageId = String(message.id ?? "");
-              const dedup = providerMessageId
-                ? await prisma.whatsAppMessage
-                    .upsert({
-                      where: { providerMessageId },
-                      create: {
-                        restaurantId: integration.restaurantId,
-                        integrationId: integration.id,
-                        providerMessageId,
-                        direction: "inbound",
-                        type: mapWebhookMessageType(message.type),
-                        status: "received",
-                        fromPhone,
-                        toPhone: normalizeWhatsAppPhone(integration.displayPhoneNumber),
-                        body: extractWebhookMessageBody(message),
-                        rawPayload: message,
-                        createdAt: toWebhookDate(message.timestamp),
-                      },
-                      update: {},
-                      select: { id: true, createdAt: true },
-                    })
-                    .catch(() => null)
-                : null;
-
-              // If the row already existed (createdAt < now-2s heuristic
-              // is unreliable — instead we rely on the fact that updates
-              // are no-ops; we detect via a separate count check), we
-              // still proceed but only the FIRST transition will commit
-              // due to the atomic conditional update in transitionOrder.
-              // That's safer than trying to detect "existed before".
-
-              // C1: prefer the order number embedded in the operator's reply.
-              const order = detected.orderNumber
-                ? await findPendingOrderByNumber(
-                    integration.restaurantId,
-                    detected.orderNumber
-                  )
-                : await findOldestPendingOrderForRestaurant(
-                    integration.restaurantId
-                  );
-
-              if (order && dedup) {
-                const result = await transitionOrder({
-                  orderIntentId: order.id,
-                  action: detected.action,
-                  actor: "restaurant",
-                  source: "whatsapp_webhook",
-                  expectedRestaurantId: integration.restaurantId,
-                  metadata: {
-                    providerMessageId,
-                    fromPhone,
-                    orderNumberInReply: detected.orderNumber,
-                    routedBy: detected.orderNumber ? "order_number" : "oldest_pending",
-                  },
-                });
-                if (result.ok) {
-                  // Order handled — already dedup-recorded above; skip
-                  // the full CRM inbound handler.
-                  continue;
-                }
-                // Transition lost the race (e.g. cron expired it in the
-                // same tick). Fall through to CRM logging so the operator
-                // at least sees their reply.
-              }
-            }
-          }
-
-          const inbound = await handleInboundMessage({
+          await handleInboundMessage({
             integration,
             message,
             contactName: contact?.profile?.name ?? null,
           });
-          if (!isFromOperatorPhone) {
-            await maybeEnqueueDinerConcierge({ restaurant, inbound });
-          }
         }
 
         for (const status of statuses) {

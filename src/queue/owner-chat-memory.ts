@@ -14,7 +14,7 @@ import {
 } from "@/lib/owner-chat-prompts";
 import { prisma } from "@/lib/prisma";
 import { STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 import { createSousChefMessage } from "@/services/anthropic-models";
 
 export const OWNER_CHAT_MEMORY_FANOUT_JOB = "owner-chat-memory-fanout";

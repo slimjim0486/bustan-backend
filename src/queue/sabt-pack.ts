@@ -24,7 +24,7 @@ import PgBoss from "pg-boss";
 import { DraftActionSource } from "@prisma/client";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 import { sendLifecycleEmail } from "@/services/email";
 import { ensureSystemDraftForAdProject } from "@/services/draft-actions";
 import {

@@ -10,7 +10,7 @@ import {
 } from "@/lib/entitlements";
 import { ApiError } from "@/lib/errors";
 import { errorResponse } from "@/lib/http";
-import { buildPublicMenuItemWhere } from "@/lib/menu-visibility";
+import { buildPublicMenuItemWhere } from "@/lib/dormant-menu-query";
 import { buildLivePromotionWhere, buildPromotionInclude } from "@/lib/promotions";
 import { prisma } from "@/lib/prisma";
 import { isReservedSlug, slugify } from "@/lib/slug";

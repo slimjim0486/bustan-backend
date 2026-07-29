@@ -18,7 +18,7 @@ import { generateSlideshowCaptions, type SlideshowCaptionsResult } from "./slide
 import {
   pickSlideshowDishes,
   SLIDESHOW_FRAME_COUNT,
-} from "./slideshow-dish-picker";
+} from "@/lib/archived-feature-guards";
 import type { UsageTotals } from "./claude-orchestrator";
 import type { AdStudioBrief, RestaurantBrandContext } from "./types";
 

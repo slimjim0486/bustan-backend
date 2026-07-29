@@ -31,7 +31,7 @@ import { enqueueAdStudioGeneration, enqueueRegenImage } from "@/queue/ad-studio-
 import { buildSlideshowFrames } from "@/services/ad-studio-ai/slideshow-compositor";
 import { generateSlideshowCaptions } from "@/services/ad-studio-ai/slideshow-captions";
 import { hydrateBrief } from "@/services/ad-studio-ai";
-import { SLIDESHOW_FRAME_COUNT } from "@/services/ad-studio-ai/slideshow-dish-picker";
+import { SLIDESHOW_FRAME_COUNT } from "@/lib/archived-feature-guards";
 import { runEventStagerForRestaurantNow } from "@/queue/event-stager";
 import { buildAndUploadBundle } from "@/services/ad-studio-ai/export-bundle";
 import { buildMetaExport } from "@/services/ad-studio-meta-export";

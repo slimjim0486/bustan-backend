@@ -24,7 +24,7 @@
 import PgBoss from "pg-boss";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 import { runCompetitorIntelForRestaurant } from "@/services/competitor-intel";
 import { getOrgMonthlyExaSpend } from "@/services/competitor-intel/budget";
 import { sendLifecycleEmail } from "@/services/email";

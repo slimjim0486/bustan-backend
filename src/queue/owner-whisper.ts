@@ -14,7 +14,7 @@ import {
 } from "@/lib/owner-chat-prompts";
 import { prisma } from "@/lib/prisma";
 import { STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 import { WEEKLY_ELIGIBLE_PLANS } from "@/queue/weekly-report";
 import { createSousChefMessage } from "@/services/anthropic-models";
 

@@ -20,13 +20,13 @@ import PgBoss from "pg-boss";
 import type { Prisma } from "@prisma/client";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
-import { getBoss } from "@/queue/image-generation";
+import { getBoss } from "@/queue/boss";
 import { enqueueProactiveNudge } from "@/queue/proactive-nudge";
 import { sendLifecycleEmail } from "@/services/email";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { campaignArchetypes } from "@/services/ad-studio/campaigns";
 import { ensureSystemDraftForAdProject } from "@/services/draft-actions";
-import { pickHeroDishForRestaurant } from "@/services/ad-studio-ai/hero-dish-picker";
+import { pickHeroDishForRestaurant } from "@/lib/archived-feature-guards";
 import { DraftActionSource } from "@prisma/client";
 import type { CalendarMoment, CountryCode } from "@/services/ad-studio/types";
 import {
