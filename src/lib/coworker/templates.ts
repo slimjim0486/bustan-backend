@@ -173,11 +173,52 @@ const DAILY_BRIEF_LITE_AR: CoworkerTemplateDefinition = {
   footer: "أرسل STOP لإيقاف بستان على واتساب.",
 };
 
+// Phase 4 / Task 4: evening booking summary, sent once daily to booking-loop
+// tenants (owner-approved copy, sign-off 2026-07-30). Reuses the daily-brief
+// footer pattern (Bustan-branded, STOP opt-out) for Meta policy consistency.
+const BOOKING_OWNER_DAY_SUMMARY_EN: CoworkerTemplateDefinition = {
+  name: "booking_owner_day_summary",
+  locale: "en",
+  category: "UTILITY",
+  version: 1,
+  body: "Evening summary for {{1}}: {{2}} bookings today, {{3}} new customers, AED {{4}} in deposits collected. Tomorrow: {{5}} confirmed appointments. Reply here for details.",
+  variables: [
+    { name: "business_name", example: "Glow Salon" },
+    { name: "bookings_today", example: "12" },
+    { name: "new_customers", example: "4" },
+    { name: "deposits_aed", example: "560" },
+    { name: "tomorrow_confirmed", example: "9" },
+  ],
+  footer: "Reply STOP to pause Bustan on WhatsApp.",
+};
+
+// AR translation is a draft authored for this task (the approved-copy sign-off
+// only covered the EN body for this template) — placeholder count/order
+// mirrors the EN body exactly ({{1}}..{{5}} businessName, bookingsToday,
+// newCustomers, depositsAed, tomorrowConfirmed).
+const BOOKING_OWNER_DAY_SUMMARY_AR: CoworkerTemplateDefinition = {
+  name: "booking_owner_day_summary",
+  locale: "ar",
+  category: "UTILITY",
+  version: 1,
+  body: "ملخص المساء لـ {{1}}: {{2}} حجوزات اليوم، {{3}} عملاء جدد، {{4}} درهم تم تحصيلها كودائع. غداً: {{5}} مواعيد مؤكدة. رد هنا للتفاصيل.",
+  variables: [
+    { name: "business_name", example: "جلو سالون" },
+    { name: "bookings_today", example: "12" },
+    { name: "new_customers", example: "4" },
+    { name: "deposits_aed", example: "560" },
+    { name: "tomorrow_confirmed", example: "9" },
+  ],
+  footer: "أرسل STOP لإيقاف بستان على واتساب.",
+};
+
 export const COWORKER_TEMPLATE_LIBRARY: ReadonlyArray<CoworkerTemplateDefinition> = [
   DAILY_BRIEF_FULL_EN,
   DAILY_BRIEF_FULL_AR,
   DAILY_BRIEF_LITE_EN,
   DAILY_BRIEF_LITE_AR,
+  BOOKING_OWNER_DAY_SUMMARY_EN,
+  BOOKING_OWNER_DAY_SUMMARY_AR,
 ];
 
 // ── Validator ─────────────────────────────────────────────────

@@ -12,11 +12,26 @@ import {
 test("library contains both locales of both daily-brief variants", () => {
   const names = COWORKER_TEMPLATE_LIBRARY.map((d) => `${d.name}:${d.locale}`).sort();
   assert.deepEqual(names, [
+    "booking_owner_day_summary:ar",
+    "booking_owner_day_summary:en",
     "coworker_daily_brief_full:ar",
     "coworker_daily_brief_full:en",
     "coworker_daily_brief_lite:ar",
     "coworker_daily_brief_lite:en",
   ]);
+});
+
+test("booking_owner_day_summary: en+ar both present, UTILITY, 5 params", () => {
+  const en = findTemplate("booking_owner_day_summary", "en");
+  const ar = findTemplate("booking_owner_day_summary", "ar");
+  assert.ok(en, "expected en variant");
+  assert.ok(ar, "expected ar variant");
+  assert.equal(en?.category, "UTILITY");
+  assert.equal(ar?.category, "UTILITY");
+  assert.equal(en?.variables.length, 5);
+  assert.equal(ar?.variables.length, 5);
+  assert.equal(validateTemplate(en!).ok, true);
+  assert.equal(validateTemplate(ar!).ok, true);
 });
 
 test("template footers identify the WhatsApp surface as Bustan", () => {

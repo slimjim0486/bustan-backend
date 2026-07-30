@@ -20,6 +20,7 @@
     "demo:sales:seed": "tsx src/scripts/seed-sales-demo.ts",
     "demo:booking:seed": "tsx src/scripts/seed-booking-demo.ts",
     "coworker:submit-templates": "tsx scripts/coworker-submit-templates.ts",
+    "booking:submit-templates": "tsx scripts/submit-booking-templates.ts",
     "backfill:staged-draft-hero-dish": "tsx scripts/backfill-staged-draft-hero-dish.ts",
     "backfill:dedupe-drafts": "tsx scripts/backfill-dedupe-resurrected-drafts.ts",
     "backfill:legacy-consent": "tsx scripts/backfill-legacy-consent.ts",
