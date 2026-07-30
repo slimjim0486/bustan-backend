@@ -3,13 +3,13 @@
 // Mirrors owner-whisper.ts.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { Prisma } from "@prisma/client";
 import PgBoss from "pg-boss";
 import { estimateAiUsageCost, logAiUsage } from "@/lib/ai-usage";
+import { FEE_COUNTED_STATUSES, computeNoShowRate } from "@/lib/booking-metrics";
 import { env } from "@/lib/env";
 import {
   buildWeeklyReportPrompt,
-  computeWeeklyTiles,
+  computeBookingWeeklyTiles,
   parseWeeklyReportResponse,
   type MemoryItem,
   type WeeklyReportSnapshot,
@@ -189,78 +189,78 @@ async function buildWeeklySnapshot(
   const prevStart = new Date(start.getTime() - 7 * 24 * 60 * 60 * 1000);
   const weekEndIso = weekEndLocalIso(weekStart);
 
-  const scanCount = (from: Date, to: Date) =>
-    prisma.pageView.count({ where: { restaurantId, createdAt: { gte: from, lt: to } } });
-  const orderAgg = (from: Date, to: Date) =>
-    prisma.orderIntent.aggregate({
-      where: { restaurantId, createdAt: { gte: from, lt: to } },
-      _sum: { totalPrice: true },
-      _count: true,
-    });
-  const waClicks = (from: Date, to: Date) =>
-    prisma.whatsAppClick.count({ where: { restaurantId, createdAt: { gte: from, lt: to } } });
+  const billableWhere = (from: Date, to: Date) => ({
+    restaurantId,
+    isNewCustomer: true,
+    status: { in: FEE_COUNTED_STATUSES },
+    confirmedAt: { gte: from, lt: to },
+  });
 
   const [
-    scansThis,
-    scansLast,
-    ordersThis,
-    ordersLast,
-    waThis,
-    waLast,
+    bookingsThis,
+    bookingsLast,
+    newAggThis,
+    newAggLast,
+    completedThis,
+    completedLast,
+    noShowThis,
+    noShowLast,
     pendingReplies,
-    topLikedRows,
-    topViewed,
-    itemsMissingImages,
-    itemsMissingDescriptions,
+    topServiceRows,
   ] = await Promise.all([
-    scanCount(start, end),
-    scanCount(prevStart, start),
-    orderAgg(start, end),
-    orderAgg(prevStart, start),
-    waClicks(start, end),
-    waClicks(prevStart, start),
+    prisma.booking.count({ where: { restaurantId, confirmedAt: { gte: start, lt: end } } }),
+    prisma.booking.count({ where: { restaurantId, confirmedAt: { gte: prevStart, lt: start } } }),
+    prisma.booking.aggregate({
+      where: billableWhere(start, end),
+      _sum: { feeAed: true },
+      _count: true,
+    }),
+    prisma.booking.aggregate({
+      where: billableWhere(prevStart, start),
+      _sum: { feeAed: true },
+      _count: true,
+    }),
+    prisma.booking.count({
+      where: { restaurantId, status: "COMPLETED", resolvedAt: { gte: start, lt: end } },
+    }),
+    prisma.booking.count({
+      where: { restaurantId, status: "COMPLETED", resolvedAt: { gte: prevStart, lt: start } },
+    }),
+    prisma.booking.count({
+      where: { restaurantId, status: "NO_SHOW", resolvedAt: { gte: start, lt: end } },
+    }),
+    prisma.booking.count({
+      where: { restaurantId, status: "NO_SHOW", resolvedAt: { gte: prevStart, lt: start } },
+    }),
     prisma.whatsAppConversation.count({
       where: { restaurantId, unreadCount: { gt: 0 } },
     }),
-    prisma.menuItemLike.groupBy({
-      by: ["menuItemId"],
-      where: { menuItem: { restaurantId }, createdAt: { gte: start, lt: end } },
-      _count: true,
-      orderBy: { _count: { menuItemId: "desc" } },
+    prisma.booking.groupBy({
+      by: ["serviceId"],
+      where: { restaurantId, createdAt: { gte: start, lt: end } },
+      _count: { _all: true },
+      orderBy: { _count: { serviceId: "desc" } },
       take: 1,
-    }),
-    prisma.pageView
-      .groupBy({
-        by: ["path"],
-        where: { restaurantId, createdAt: { gte: start, lt: end } },
-        _count: { _all: true },
-        orderBy: { _count: { path: "desc" } },
-        take: 1,
-      })
-      .then((rows) =>
-        rows.length > 0 ? { path: rows[0].path, views: rows[0]._count._all } : null
-      ),
-    prisma.menuItem.count({ where: { restaurantId, imageUrl: null } }),
-    prisma.menuItem.count({
-      where: { restaurantId, OR: [{ description: null }, { description: "" }] },
     }),
   ]);
 
-  const topLikedItem =
-    topLikedRows.length > 0
-      ? await prisma.menuItem
-          .findUnique({ where: { id: topLikedRows[0].menuItemId }, select: { name: true } })
-          .then((item) => (item ? { name: item.name, likes: topLikedRows[0]._count } : null))
+  const topService =
+    topServiceRows.length > 0
+      ? await prisma.service
+          .findUnique({ where: { id: topServiceRows[0].serviceId }, select: { name: true } })
+          .then((svc) =>
+            svc ? { name: svc.name, bookings: topServiceRows[0]._count._all } : null
+          )
       : null;
 
-  const revenueThis = Number((ordersThis._sum.totalPrice as Prisma.Decimal | null) ?? 0);
-  const revenueLast = Number((ordersLast._sum.totalPrice as Prisma.Decimal | null) ?? 0);
-
-  const tiles = computeWeeklyTiles({
-    scans: { thisWeek: scansThis, lastWeek: scansLast },
-    revenueAed: { thisWeek: Math.round(revenueThis), lastWeek: Math.round(revenueLast) },
-    orders: { thisWeek: ordersThis._count, lastWeek: ordersLast._count },
-    whatsappClicks: { thisWeek: waThis, lastWeek: waLast },
+  const tiles = computeBookingWeeklyTiles({
+    newCustomers: { thisWeek: newAggThis._count, lastWeek: newAggLast._count },
+    bookings: { thisWeek: bookingsThis, lastWeek: bookingsLast },
+    feesAed: { thisWeek: newAggThis._sum.feeAed ?? 0, lastWeek: newAggLast._sum.feeAed ?? 0 },
+    noShowRatePct: {
+      thisWeek: computeNoShowRate(completedThis, noShowThis) ?? 0,
+      lastWeek: computeNoShowRate(completedLast, noShowLast) ?? 0,
+    },
   });
 
   return {
@@ -268,11 +268,10 @@ async function buildWeeklySnapshot(
     weekEndLocal: weekEndIso,
     restaurantName,
     tiles,
-    topLikedItem,
-    topViewedPath: topViewed,
+    topService,
     pendingReplies,
-    menuHealth: { itemsMissingImages, itemsMissingDescriptions },
-    hadTraffic: scansThis > 0 || ordersThis._count > 0,
+    noShowCount: noShowThis,
+    hadActivity: bookingsThis > 0 || newAggThis._count > 0,
   };
 }
 

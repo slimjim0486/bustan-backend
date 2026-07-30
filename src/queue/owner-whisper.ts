@@ -400,7 +400,7 @@ async function processGenerateJob(job: GenerateWorkerJob) {
   try {
     const restaurant = await prisma.restaurant.findUnique({
       where: { id: restaurantId },
-      select: { name: true, cuisineType: true },
+      select: { name: true },
     });
     if (!restaurant) {
       await prisma.ownerWhisper.delete({ where: { id: placeholder.id } });
@@ -426,18 +426,13 @@ async function processGenerateJob(job: GenerateWorkerJob) {
       content: m.content,
     }));
 
-    const prompt = buildWhisperPrompt(
-      restaurant.name,
-      restaurant.cuisineType,
-      snapshot,
-      memories
-    );
+    const prompt = buildWhisperPrompt(restaurant.name, snapshot, memories);
 
     const client = getClient();
     const response = await createSousChefMessage(client, {
       max_tokens: 400,
       system:
-        "You are Sous Chef writing the Owner's Whisper. Output exactly 5 lines in the strict format. No prose, no greeting, no sign-off.",
+        "You are Bustan writing the Owner's Whisper. Output exactly 5 lines in the strict format. No prose, no greeting, no sign-off.",
       messages: [{ role: "user", content: prompt }],
     }, {
       route: "owner-whisper",

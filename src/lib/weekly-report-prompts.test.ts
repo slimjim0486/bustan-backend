@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computeWeeklyTiles, weeklyDeltaPct } from "@/lib/owner-chat-prompts";
+import { computeBookingWeeklyTiles, computeWeeklyTiles, weeklyDeltaPct } from "@/lib/owner-chat-prompts";
 
 test("weeklyDeltaPct returns rounded integer percent", () => {
   assert.equal(weeklyDeltaPct(112, 100), 12);
@@ -30,6 +30,22 @@ test("computeWeeklyTiles builds four tiles with direction", () => {
   );
 });
 
+test("computeBookingWeeklyTiles builds the four booking tiles", () => {
+  const tiles = computeBookingWeeklyTiles({
+    newCustomers: { thisWeek: 6, lastWeek: 4 },
+    bookings: { thisWeek: 18, lastWeek: 20 },
+    feesAed: { thisWeek: 300, lastWeek: 200 },
+    noShowRatePct: { thisWeek: 10, lastWeek: 0 },
+  });
+  assert.deepEqual(
+    tiles.map((t) => t.key),
+    ["new_customers", "bookings", "fees", "no_show_rate"]
+  );
+  assert.equal(tiles[0].deltaPct, 50);
+  assert.equal(tiles[1].direction, "down");
+  assert.equal(tiles[3].deltaPct, null); // zero baseline → null
+});
+
 import {
   buildEventNudgePrompt,
   buildWeeklyReportPrompt,
@@ -44,16 +60,15 @@ const SNAP: WeeklyReportSnapshot = {
   weekEndLocal: "2026-07-05",
   restaurantName: "Zaytoun",
   tiles: [
-    { key: "scans", label: "Scans", value: 1240, deltaPct: 12, direction: "up" },
-    { key: "revenue", label: "Revenue", value: 8400, deltaPct: 6, direction: "up" },
-    { key: "orders", label: "Orders", value: 88, deltaPct: -4, direction: "down" },
-    { key: "whatsapp", label: "WhatsApp", value: 30, deltaPct: null, direction: "up" },
+    { key: "new_customers", label: "New customers", value: 6, deltaPct: 50, direction: "up" },
+    { key: "bookings", label: "Bookings", value: 18, deltaPct: -10, direction: "down" },
+    { key: "fees", label: "Fees earned", value: 300, deltaPct: 50, direction: "up" },
+    { key: "no_show_rate", label: "No-show rate", value: 10, deltaPct: null, direction: "up" },
   ],
-  topLikedItem: { name: "Lamb Ouzi", likes: 48 },
-  topViewedPath: { path: "/menu", views: 900 },
+  topService: { name: "Balayage", bookings: 12 },
   pendingReplies: 4,
-  menuHealth: { itemsMissingImages: 6, itemsMissingDescriptions: 2 },
-  hadTraffic: true,
+  noShowCount: 2,
+  hadActivity: true,
 };
 
 test("buildWeeklyReportPrompt embeds the restaurant, JSON snapshot, and demands JSON out", () => {

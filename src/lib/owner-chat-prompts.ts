@@ -328,7 +328,6 @@ export interface WhisperSnapshot {
 
 export function buildWhisperPrompt(
   restaurantName: string,
-  cuisineType: string | null,
   snapshot: WhisperSnapshot,
   memories: MemoryItem[]
 ): string {
@@ -342,17 +341,15 @@ ${renderedMemories}
 
   const quietDayHint = snapshot.hadTrafficYesterday
     ? ""
-    : "\n\nNOTE: Yesterday had zero scans/orders. Pivot the briefing to a menu-health insight (images, descriptions, dietary tags) rather than fabricating activity. The 'Yesterday' and 'Top' lines should honestly say so.";
+    : "\n\nNOTE: Yesterday had zero activity. Pivot the briefing to a customer-reactivation or quiet-day insight rather than fabricating activity. The 'Yesterday' and 'Top' lines should honestly say so.";
 
-  return `You are Bustan writing the daily "Owner's Whisper" — a 5-line briefing for the owner of ${restaurantName}${
-    cuisineType ? ` (${cuisineType} cuisine)` : ""
-  }. It must be scannable in 8 seconds.
+  return `You are Bustan, ${restaurantName}'s booking manager, writing the daily "Owner's Whisper" — a 5-line briefing. It must be scannable in 8 seconds.
 
 STRICT FORMAT (exactly 5 lines, in order, with these emojis):
 ✅ Yesterday: <one-line metric summary>
 🔥 Top: <single highlight — item, page, or trend>
 ⚠️ Watch: <issue or anomaly, or "nothing concerning">
-💬 Customers: <WhatsApp/order activity summary>
+💬 Customers: <WhatsApp/booking activity summary>
 💡 Try today: <one concrete, low-effort action>
 
 RULES
@@ -376,7 +373,15 @@ export interface WeeklyMetric {
 }
 
 export interface WeeklyTile {
-  key: "scans" | "revenue" | "orders" | "whatsapp";
+  key:
+    | "scans"
+    | "revenue"
+    | "orders"
+    | "whatsapp"
+    | "new_customers"
+    | "bookings"
+    | "fees"
+    | "no_show_rate";
   label: string;
   value: number;
   deltaPct: number | null;
@@ -397,25 +402,42 @@ function tileDirection(deltaPct: number | null): "up" | "down" | "flat" {
   return "flat";
 }
 
+function buildTile(
+  key: WeeklyTile["key"],
+  label: string,
+  metric: WeeklyMetric
+): WeeklyTile {
+  const deltaPct = weeklyDeltaPct(metric.thisWeek, metric.lastWeek);
+  return { key, label, value: metric.thisWeek, deltaPct, direction: tileDirection(deltaPct) };
+}
+
 export function computeWeeklyTiles(m: {
   scans: WeeklyMetric;
   revenueAed: WeeklyMetric;
   orders: WeeklyMetric;
   whatsappClicks: WeeklyMetric;
 }): WeeklyTile[] {
-  const build = (
-    key: WeeklyTile["key"],
-    label: string,
-    metric: WeeklyMetric
-  ): WeeklyTile => {
-    const deltaPct = weeklyDeltaPct(metric.thisWeek, metric.lastWeek);
-    return { key, label, value: metric.thisWeek, deltaPct, direction: tileDirection(deltaPct) };
-  };
   return [
-    build("scans", "Scans", m.scans),
-    build("revenue", "Revenue", m.revenueAed),
-    build("orders", "Orders", m.orders),
-    build("whatsapp", "WhatsApp", m.whatsappClicks),
+    buildTile("scans", "Scans", m.scans),
+    buildTile("revenue", "Revenue", m.revenueAed),
+    buildTile("orders", "Orders", m.orders),
+    buildTile("whatsapp", "WhatsApp", m.whatsappClicks),
+  ];
+}
+
+/** Booking-operator version of computeWeeklyTiles — the four booking-era
+ *  weekly tiles (new customers, bookings, fees, no-show rate). */
+export function computeBookingWeeklyTiles(m: {
+  newCustomers: WeeklyMetric;
+  bookings: WeeklyMetric;
+  feesAed: WeeklyMetric;
+  noShowRatePct: WeeklyMetric;
+}): WeeklyTile[] {
+  return [
+    buildTile("new_customers", "New customers", m.newCustomers),
+    buildTile("bookings", "Bookings", m.bookings),
+    buildTile("fees", "Fees earned", m.feesAed),
+    buildTile("no_show_rate", "No-show rate", m.noShowRatePct),
   ];
 }
 
@@ -428,20 +450,19 @@ export interface WeeklyReportSnapshot {
   weekEndLocal: string; // "2026-07-05"
   restaurantName: string;
   tiles: WeeklyTile[];
-  topLikedItem: { name: string; likes: number } | null;
-  topViewedPath: { path: string; views: number } | null;
+  topService: { name: string; bookings: number } | null;
   pendingReplies: number;
-  menuHealth: { itemsMissingImages: number; itemsMissingDescriptions: number };
-  hadTraffic: boolean;
+  noShowCount: number;
+  hadActivity: boolean;
 }
 
 export interface WeeklyAction {
   label: string;
   seedPrompt: string;
-  kind: "promo" | "menu" | "inbox" | "ads";
+  kind: "promo" | "menu" | "inbox" | "ads" | "bookings";
 }
 
-const WEEKLY_ACTION_KINDS = new Set(["promo", "menu", "inbox", "ads"]);
+const WEEKLY_ACTION_KINDS = new Set(["promo", "menu", "inbox", "ads", "bookings"]);
 const REPORT_ACTION_KINDS = WEEKLY_ACTION_KINDS;
 
 export function buildWeeklyReportPrompt(
@@ -456,11 +477,11 @@ ${renderedMemories}
 </long_term_memory>`
     : "";
 
-  const quietHint = snapshot.hadTraffic
+  const quietHint = snapshot.hadActivity
     ? ""
-    : "\n\nNOTE: The week had almost no scans/orders. Keep the narrative honest about the quiet week and make the actions about menu health (photos, descriptions) and re-engagement rather than fabricating momentum.";
+    : "\n\nNOTE: The week had almost no bookings. Keep the narrative honest about the quiet week and make the actions about reactivating past customers and filling quiet days rather than fabricating activity.";
 
-  return `You are Bustan, ${snapshot.restaurantName}'s restaurant manager, writing the WEEKLY REPORT for the week ${snapshot.weekStartLocal} to ${snapshot.weekEndLocal}.
+  return `You are Bustan, ${snapshot.restaurantName}'s booking manager, writing the WEEKLY REPORT for the week ${snapshot.weekStartLocal} to ${snapshot.weekEndLocal}.
 
 The metric tiles are already computed and shown to the owner — do NOT restate raw numbers mechanically. Your job is two parts:
 1. narrative: 2–3 warm, plain-language sentences on how the week went — the standout win and the single thing to watch. Reference the tiles' directions naturally.
@@ -468,9 +489,9 @@ The metric tiles are already computed and shown to the owner — do NOT restate 
 
 RULES
 - Currency is AED. Never invent numbers; only reference what's in the snapshot.
-- kind must be exactly one of: "promo" | "menu" | "inbox" | "ads".
-- seedPrompt must be a single concrete instruction, e.g. "Create a Tuesday lunch promo to lift our slowest day this week".
-- Ground actions in the snapshot: a revenue/orders dip → a promo; missing images/descriptions → a menu action; pending WhatsApp replies → an inbox action.
+- kind must be exactly one of: "promo" | "menu" | "inbox" | "ads" | "bookings".
+- seedPrompt must be a single concrete instruction, e.g. "Create a reactivation promo to fill our quietest day this week".
+- Ground actions in the snapshot: a bookings/new-customer dip → a reactivation campaign or promo; a rising no-show rate → tighter deposits or reminders; pending WhatsApp replies → an inbox action.
 - Output ONLY a JSON object, no prose or code fences, exactly this shape:
 {"narrative": "...", "actions": [{"label": "...", "seedPrompt": "...", "kind": "promo"}]}${quietHint}
 
@@ -514,17 +535,17 @@ ${renderedMemories}
 </long_term_memory>`
     : "";
 
-  return `You are Bustan, ${snapshot.restaurantName}'s restaurant manager, writing a PROACTIVE EVENT NUDGE.
+  return `You are Bustan, ${snapshot.restaurantName}'s booking manager, writing a PROACTIVE EVENT NUDGE.
 
 The owner did not ask first. You are flying in because this calendar moment is now worth acting on. A campaign brief has already been staged in Ad Studio${snapshot.adProjectId ? ` as project ${snapshot.adProjectId}` : ""}.
 
 Your job is two parts:
-1. narrative: 2–3 warm, plain-language sentences. Say the moment is coming, why it matters for this restaurant, and that you have a campaign brief ready to build out.
+1. narrative: 2–3 warm, plain-language sentences. Say the moment is coming, why it matters for this business, and that you have a campaign brief ready to build out.
 2. actions: 1–3 concrete things you propose to do. Each action has a short button label, a "seedPrompt" written in the OWNER's first-person voice as an instruction to you, and a kind.
 
 RULES
 - Never invent a date, deadline, country, campaign detail, or number. Use only the snapshot.
-- kind must be exactly one of: "promo" | "menu" | "inbox" | "ads".
+- kind must be exactly one of: "promo" | "menu" | "inbox" | "ads" | "bookings".
 - seedPrompt must be a single concrete owner instruction that references the already-staged campaign, e.g. "Build out and launch the National Day campaign you drafted."
 - Make the first action the campaign action unless the snapshot clearly suggests a safer menu/inbox prep step.
 - Output ONLY a JSON object, no prose or code fences, exactly this shape:
