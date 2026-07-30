@@ -23,6 +23,14 @@ export function startOfMonthGst(now: Date = new Date()): Date {
   return new Date(shifted.getTime() - GST_OFFSET_MS);
 }
 
+export function startOfNextMonthGst(now: Date = new Date()): Date {
+  const shifted = new Date(now.getTime() + GST_OFFSET_MS);
+  shifted.setUTCDate(1);
+  shifted.setUTCHours(0, 0, 0, 0);
+  shifted.setUTCMonth(shifted.getUTCMonth() + 1);
+  return new Date(shifted.getTime() - GST_OFFSET_MS);
+}
+
 export function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * DAY_MS);
 }

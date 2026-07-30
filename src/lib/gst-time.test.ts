@@ -4,6 +4,7 @@ import {
   GST_OFFSET_MS,
   addDays,
   startOfMonthGst,
+  startOfNextMonthGst,
   startOfTodayGst,
   startOfWeekGst,
 } from "@/lib/gst-time";
@@ -29,6 +30,16 @@ test("startOfWeekGst returns the Dubai Monday of the current week", () => {
 test("startOfMonthGst returns Dubai 1st-of-month midnight in UTC", () => {
   const d = startOfMonthGst(new Date("2026-07-30T10:00:00Z"));
   assert.equal(d.toISOString(), "2026-06-30T20:00:00.000Z");
+});
+
+test("startOfNextMonthGst returns Dubai 1st-of-next-month midnight in UTC", () => {
+  const d = startOfNextMonthGst(new Date("2026-07-30T10:00:00Z"));
+  assert.equal(d.toISOString(), "2026-07-31T20:00:00.000Z");
+});
+
+test("startOfNextMonthGst rolls over the December to January year boundary", () => {
+  const d = startOfNextMonthGst(new Date("2026-12-15T10:00:00Z"));
+  assert.equal(d.toISOString(), "2026-12-31T20:00:00.000Z");
 });
 
 test("addDays adds whole days", () => {

@@ -11,6 +11,7 @@ import { ApiError } from "@/lib/errors";
 import {
   addDays,
   startOfMonthGst,
+  startOfNextMonthGst,
   startOfTodayGst,
   startOfWeekGst,
 } from "@/lib/gst-time";
@@ -83,6 +84,7 @@ export const bookingsRoute = bookingsRouteBase
       const todayEnd = addDays(todayStart, 1);
       const weekStart = startOfWeekGst(now);
       const monthStart = startOfMonthGst(now);
+      const monthEnd = startOfNextMonthGst(now);
       const billableWhere = {
         restaurantId,
         isNewCustomer: true,
@@ -116,7 +118,7 @@ export const bookingsRoute = bookingsRouteBase
           _sum: { feeAed: true },
         }),
         prisma.booking.count({
-          where: { restaurantId, slotAt: { gte: monthStart } },
+          where: { restaurantId, slotAt: { gte: monthStart, lt: monthEnd } },
         }),
         prisma.booking.count({
           where: { ...billableWhere, confirmedAt: { gte: monthStart } },
