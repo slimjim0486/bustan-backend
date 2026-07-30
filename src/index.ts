@@ -53,6 +53,7 @@ import { autonomyRoute } from "@/routes/autonomy";
 import { onboardingRoute } from "@/routes/onboarding";
 import { servicesRoute } from "@/routes/services";
 import { bookingsRoute } from "@/routes/bookings";
+import { publicBookingsRoute } from "@/routes/public-bookings";
 import { depositWebhooksRoute } from "@/routes/deposit-webhooks";
 
 initSentry();
@@ -100,6 +101,7 @@ app.route("/api/autonomy", autonomyRoute);
 app.route("/api/onboarding", onboardingRoute);
 app.route("/api/services", servicesRoute);
 app.route("/api/bookings", bookingsRoute);
+app.route("/api/public/bookings", publicBookingsRoute);
 
 serve(
   {
