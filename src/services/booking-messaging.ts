@@ -14,6 +14,7 @@
 //     does it: the timestamp of the most recent INBOUND message on the
 //     conversation, not `lastMessageAt` (which also advances on outbound
 //     sends and would never close the window).
+import { renderBookingTemplateBody } from "@/lib/booking-templates";
 import { prisma } from "@/lib/prisma";
 import { decryptAccessToken, sendWhatsAppTemplate, sendWhatsAppText } from "@/lib/whatsapp-business";
 
@@ -95,11 +96,27 @@ export async function sendBookingTemplate(input: {
       parameters: input.parameters,
     });
     if (input.conversationId) {
+      // Persist the actual rendered message, not an opaque placeholder —
+      // so the CRM inbox thread view shows "Hi Fatima, your booking at Glow
+      // Salon is confirmed…" rather than "[template:booking_confirmation]".
+      // Falls back to the placeholder only for a template name outside our
+      // own library (defensive; every caller today sends one of the four
+      // BOOKING_TEMPLATE_LIBRARY names).
+      let renderedBody: string;
+      try {
+        renderedBody = renderBookingTemplateBody(
+          input.templateName,
+          input.language === "ar" ? "ar" : "en",
+          input.parameters
+        );
+      } catch {
+        renderedBody = `[template:${input.templateName}]`;
+      }
       await persistOutbound({
         restaurantId: input.restaurantId,
         conversationId: input.conversationId,
         type: "template",
-        body: `[template:${input.templateName}]`,
+        body: renderedBody,
         providerMessageId,
         idempotencyKey: input.idempotencyKey,
       });

@@ -97,6 +97,31 @@ export function buildBookingTemplateParams(templateName: string, ctx: BookingTem
   }
 }
 
+/**
+ * Renders the real customer-facing body for a booking template by
+ * substituting `{{n}}` placeholders with `parameters`, in order — the same
+ * convention as `renderNumberedTemplateBody` (services/campaign-send.ts) and
+ * `renderTemplatePreview` (lib/whatsapp-business.ts, lib/coworker/templates.ts).
+ * Used by booking-messaging.ts so a persisted `WhatsAppMessage.body` row for
+ * a template send shows the actual message ("Hi Fatima, your booking at
+ * Glow Salon is confirmed…"), not an opaque `[template:name]` placeholder.
+ */
+export function renderBookingTemplateBody(
+  templateName: string,
+  language: "en" | "ar",
+  parameters: string[]
+): string {
+  const template = BOOKING_TEMPLATE_LIBRARY.find((t) => t.name === templateName);
+  if (!template) {
+    throw new Error(`Unknown booking template: ${templateName}`);
+  }
+  const body = template.languages[language].body;
+  return parameters.reduce(
+    (nextBody, value, index) => nextBody.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, "g"), value),
+    body
+  );
+}
+
 export function formatSlotGst(slotAt: Date, language: "en" | "ar" = "en"): string {
   return new Intl.DateTimeFormat(language === "ar" ? "ar-AE" : "en-AE", {
     timeZone: "Asia/Dubai",

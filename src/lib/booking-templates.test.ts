@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BOOKING_TEMPLATE_LIBRARY, buildBookingTemplateParams, formatSlotGst } from "./booking-templates";
+import {
+  BOOKING_TEMPLATE_LIBRARY,
+  buildBookingTemplateParams,
+  formatSlotGst,
+  renderBookingTemplateBody,
+} from "./booking-templates";
 import { validateTemplateBody } from "./whatsapp-business";
 
 test("library has the four customer templates, en+ar, UTILITY", () => {
@@ -81,6 +86,44 @@ test("param builders throw on unknown template name", () => {
       payUrl: "e",
     })
   );
+});
+
+test("renderBookingTemplateBody substitutes params into the real message body (en)", () => {
+  const params = buildBookingTemplateParams("booking_confirmation", {
+    customerName: "Fatima",
+    businessName: "Glow Salon",
+    serviceName: "Blow-dry",
+    slotGstFormatted: "Thu 6 Aug, 6:00 PM",
+    depositAed: 50,
+    payUrl: "https://getbustan.com/pay/x",
+  });
+  const rendered = renderBookingTemplateBody("booking_confirmation", "en", params);
+  assert.equal(
+    rendered,
+    "Hi Fatima, your booking at Glow Salon is confirmed ✅ Blow-dry — Thu 6 Aug, 6:00 PM. Your AED 50 deposit will be credited to your bill on arrival. Need to change anything? Just reply here."
+  );
+  // No leftover {{n}} placeholders — this is what a WhatsAppMessage.body row
+  // must look like, not "[template:booking_confirmation]".
+  assert.doesNotMatch(rendered, /\{\{\d+\}\}/);
+});
+
+test("renderBookingTemplateBody substitutes params into the real message body (ar)", () => {
+  const params = buildBookingTemplateParams("booking_reminder_24h", {
+    customerName: "فاطمة",
+    businessName: "جلو سالون",
+    serviceName: "قص شعر",
+    slotGstFormatted: "6:00 مساءً",
+    depositAed: 50,
+    payUrl: "https://getbustan.com/pay/x",
+  });
+  const rendered = renderBookingTemplateBody("booking_reminder_24h", "ar", params);
+  assert.match(rendered, /فاطمة/);
+  assert.match(rendered, /جلو سالون/);
+  assert.doesNotMatch(rendered, /\{\{\d+\}\}/);
+});
+
+test("renderBookingTemplateBody throws on an unknown template name", () => {
+  assert.throws(() => renderBookingTemplateBody("not_a_real_template", "en", ["a"]));
 });
 
 test("formatSlotGst renders a Dubai-timezone string without throwing", () => {
