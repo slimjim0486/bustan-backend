@@ -34,3 +34,12 @@ export function startOfNextMonthGst(now: Date = new Date()): Date {
 export function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * DAY_MS);
 }
+
+// Renders the Dubai calendar date (YYYY-MM-DD) for a given instant. Do NOT
+// use `date.toISOString().slice(0, 10)` on a GST-midnight boundary (e.g. the
+// output of startOfTodayGst/startOfWeekGst) — those Dates represent Dubai
+// midnight stored as a UTC instant 4 hours earlier, so a plain ISO slice
+// reports the previous day.
+export function toGstDateString(date: Date): string {
+  return new Date(date.getTime() + GST_OFFSET_MS).toISOString().slice(0, 10);
+}

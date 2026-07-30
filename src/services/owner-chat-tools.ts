@@ -2,8 +2,16 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { PlanEntitlements } from "@/lib/entitlements";
 import { prisma } from "@/lib/prisma";
 import type { AgentChannel } from "@/services/agent/idempotency";
-import { addDays, startOfTodayGst, startOfWeekGst } from "@/lib/gst-time";
+import { addDays, startOfTodayGst, startOfWeekGst, toGstDateString } from "@/lib/gst-time";
 import { FEE_COUNTED_STATUSES, computeNoShowRate } from "@/lib/booking-metrics";
+
+// Created once — reused across every get_today_bookings call so we're not
+// re-parsing the ICU locale data per request.
+const DUBAI_TIME_FORMATTER = new Intl.DateTimeFormat("en-AE", {
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "Asia/Dubai",
+});
 
 export interface ToolResult {
   content: string;
@@ -152,10 +160,11 @@ async function getTodayBookings(restaurantId: string, clerkId: string): Promise<
   });
   return {
     content: JSON.stringify({
-      date: todayStart.toISOString().slice(0, 10),
+      date: toGstDateString(todayStart),
       count: bookings.length,
       bookings: bookings.map((b) => ({
-        slotAt: b.slotAt.toISOString(),
+        time: DUBAI_TIME_FORMATTER.format(b.slotAt),
+        slotAtUtc: b.slotAt.toISOString(),
         customer: b.customer.displayName,
         service: b.service.name,
         durationMinutes: b.service.durationMinutes,
@@ -183,7 +192,7 @@ async function getWeekNewCustomers(restaurantId: string, clerkId: string): Promi
   });
   return {
     content: JSON.stringify({
-      weekStart: weekStart.toISOString().slice(0, 10),
+      weekStart: toGstDateString(weekStart),
       newCustomers: agg._count,
       feesAed: agg._sum.feeAed ?? 0,
     }),
@@ -257,7 +266,7 @@ async function getQuietSlots(restaurantId: string, clerkId: string): Promise<Too
             status: { in: ["CONFIRMED", "DEPOSIT_SENT"] },
           },
         })
-        .then((count) => ({ date: dayStart.toISOString().slice(0, 10), bookings: count }));
+        .then((count) => ({ date: toGstDateString(dayStart), bookings: count }));
     })
   );
   return {

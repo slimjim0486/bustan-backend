@@ -7,6 +7,7 @@ import {
   startOfNextMonthGst,
   startOfTodayGst,
   startOfWeekGst,
+  toGstDateString,
 } from "@/lib/gst-time";
 
 // 2026-07-30 is a Thursday. 01:30 UTC = 05:30 Dubai (same calendar day);
@@ -48,4 +49,17 @@ test("addDays adds whole days", () => {
     "2026-08-05T20:00:00.000Z"
   );
   assert.equal(GST_OFFSET_MS, 4 * 60 * 60 * 1000);
+});
+
+// Regression: a plain `.toISOString().slice(0, 10)` on a GST-midnight Date
+// (the output of startOfTodayGst et al.) reports the PREVIOUS calendar day,
+// because that instant is 20:00 UTC the day before Dubai midnight.
+test("toGstDateString reports the correct Dubai calendar date at a GST-midnight boundary", () => {
+  const todayStart = startOfTodayGst(new Date("2026-07-30T01:30:00Z"));
+  assert.equal(todayStart.toISOString().slice(0, 10), "2026-07-29"); // the trap
+  assert.equal(toGstDateString(todayStart), "2026-07-30"); // the fix
+});
+
+test("toGstDateString matches the naive slice away from midnight boundaries", () => {
+  assert.equal(toGstDateString(new Date("2026-07-30T10:00:00Z")), "2026-07-30");
 });
