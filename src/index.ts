@@ -24,6 +24,7 @@ import { startEventStagerWorker } from "@/queue/event-stager";
 import { startCompetitorIntelWorker } from "@/queue/competitor-intel";
 import { startCoworkerDailyBriefWorker } from "@/queue/coworker-daily-brief";
 import { startDraftShipWorker } from "@/queue/draft-ship";
+import { startBookingExpiryWorker } from "@/queue/booking-expiry";
 import { adStudioRoute, adStudioPublicRoute } from "@/routes/ad-studio";
 import { sabtPackRoute, sabtPackAdminRoute } from "@/routes/sabt-pack";
 import { marketPulseRoute } from "@/routes/market-pulse";
@@ -209,4 +210,12 @@ startDraftShipWorker()
   })
   .catch((error) => {
     console.error("pg-boss draft-ship worker failed to start", error);
+  });
+
+startBookingExpiryWorker()
+  .then(() => {
+    console.log("pg-boss booking-expiry worker started");
+  })
+  .catch((error) => {
+    console.error("pg-boss booking-expiry worker failed to start", error);
   });
