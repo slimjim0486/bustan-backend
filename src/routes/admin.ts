@@ -177,6 +177,8 @@ export const adminRoute = adminRouteBase
               supportTickets: true,
               menuItems: true,
               pageViews: true,
+              services: true,
+              bookings: true,
             },
           },
         },
@@ -190,6 +192,14 @@ export const adminRoute = adminRouteBase
           slug: restaurant.slug,
           isPublished: restaurant.isPublished,
           subscriptionStatus: restaurant.subscriptionStatus,
+          businessType: restaurant.businessType,
+          newCustomerFeeAed: restaurant.newCustomerFeeAed,
+          depositAed: restaurant.depositAed,
+          onboardingStep: restaurant.onboardingStep,
+          onboardingCompleted:
+            Array.isArray(restaurant.onboardingCompleted)
+              ? restaurant.onboardingCompleted
+              : [],
           subscription: restaurant.subscription,
           operatorAccount: restaurant.operatorAccount,
           owner: restaurant.owner,

@@ -157,6 +157,35 @@ enum CustomerConsentStatus {
   opt_out
 }
 
+enum BusinessType {
+  RESTAURANT
+  SALON
+  HOME_SERVICES
+}
+
+enum BookingStatus {
+  INQUIRY
+  DEPOSIT_SENT
+  CONFIRMED
+  COMPLETED
+  NO_SHOW
+  CANCELLED
+  EXPIRED
+}
+
+enum BookingSource {
+  WHATSAPP
+  AD
+  SEO
+  REACTIVATION
+  MANUAL
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+}
+
 enum OrderFulfillmentMethod {
   delivery
   pickup
@@ -317,6 +346,12 @@ model Restaurant {
   ordersV1Enabled        Boolean            @default(false) @map("orders_v1_enabled")
   sousChefRoutingEnabled Boolean            @default(false) @map("sous_chef_routing_enabled")
   dinerAutoReplyEnabled  Boolean            @default(false) @map("diner_auto_reply_enabled")
+  businessType           BusinessType       @default(RESTAURANT) @map("business_type")
+  newCustomerFeeAed      Int?               @map("new_customer_fee_aed")
+  depositAed             Int?               @map("deposit_aed")
+  bookingPolicies        Json?              @map("booking_policies")
+  onboardingStep         Int                @default(1) @map("onboarding_step")
+  onboardingCompleted    Json?              @map("onboarding_completed")
   // B1b real autonomy. Owner master opt-in (default OFF): the plan entitlement
   // is the ceiling, this is the actual switch. autonomyResumedAt zeroes the
   // velocity-breaker rolling window when the owner taps Resume.
@@ -374,6 +409,10 @@ model Restaurant {
   gbpReviews                GbpReview[]
   analyticsImports          AnalyticsImport[]
   analyticsImportMetrics    AnalyticsImportMetric[]
+  serviceCategories         ServiceCategory[]
+  services                  Service[]
+  bookings                  Booking[]
+  payoutRecords             PayoutRecord[]
 
   @@index([ownerId])
   @@index([operatorAccountId])
@@ -785,6 +824,7 @@ model Customer {
   whatsappMessages      WhatsAppMessage[]
   referralAdProject     AdProject?             @relation("CustomerReferralProject", fields: [referralAdProjectId], references: [id], onDelete: SetNull)
   referralCreative      AdCreative?            @relation("CustomerReferralCreative", fields: [referralCreativeId], references: [id], onDelete: SetNull)
+  bookings              Booking[]
 
   @@unique([restaurantId, normalizedPhone])
   @@index([restaurantId, marketingOptIn])
@@ -814,6 +854,98 @@ model CustomerConsent {
   @@index([restaurantId, createdAt])
   @@index([customerId, createdAt])
   @@map("customer_consents")
+}
+
+model ServiceCategory {
+  id           String   @id @default(cuid())
+  restaurantId String   @map("restaurant_id")
+  name         String
+  nameAr       String?  @map("name_ar")
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  services   Service[]
+
+  @@index([restaurantId, sortOrder])
+  @@map("service_categories")
+}
+
+model Service {
+  id              String   @id @default(cuid())
+  restaurantId    String   @map("restaurant_id")
+  categoryId      String   @map("category_id")
+  name            String
+  nameAr          String?  @map("name_ar")
+  description     String?
+  priceAed        Int      @map("price_aed")
+  durationMinutes Int      @default(60) @map("duration_minutes")
+  isActive        Boolean  @default(true) @map("is_active")
+  sortOrder       Int      @default(0) @map("sort_order")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  restaurant Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  category   ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  bookings   Booking[]
+
+  @@index([restaurantId, isActive, sortOrder])
+  @@index([categoryId, sortOrder])
+  @@map("services")
+}
+
+model Booking {
+  id              String        @id @default(cuid())
+  restaurantId    String        @map("restaurant_id")
+  customerId      String        @map("customer_id")
+  serviceId       String        @map("service_id")
+  slotAt          DateTime      @map("slot_at")
+  status          BookingStatus @default(INQUIRY)
+  isNewCustomer   Boolean       @map("is_new_customer")
+  feeAed          Int           @default(0) @map("fee_aed")
+  depositAed      Int           @default(0) @map("deposit_aed")
+  stripeSessionId String?       @unique @map("stripe_session_id")
+  conversationId  String?       @map("conversation_id")
+  source          BookingSource @default(WHATSAPP)
+  notes           String?
+  createdAt       DateTime      @default(now()) @map("created_at")
+  confirmedAt     DateTime?     @map("confirmed_at")
+  resolvedAt      DateTime?     @map("resolved_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  restaurant   Restaurant            @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  customer     Customer              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service      Service               @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  conversation WhatsAppConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId, slotAt])
+  @@index([restaurantId, status, slotAt])
+  @@index([customerId, createdAt])
+  @@index([serviceId, slotAt])
+  @@index([conversationId])
+  @@map("bookings")
+}
+
+model PayoutRecord {
+  id                   String       @id @default(cuid())
+  restaurantId         String       @map("restaurant_id")
+  periodStart          DateTime     @map("period_start")
+  periodEnd            DateTime     @map("period_end")
+  depositsCollectedAed Int          @default(0) @map("deposits_collected_aed")
+  feesKeptAed          Int          @default(0) @map("fees_kept_aed")
+  amountDueAed         Int          @default(0) @map("amount_due_aed")
+  status               PayoutStatus @default(PENDING)
+  paidAt               DateTime?    @map("paid_at")
+  reference            String?
+  createdAt            DateTime     @default(now()) @map("created_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, periodStart, periodEnd])
+  @@index([restaurantId, status, periodEnd])
+  @@map("payout_records")
 }
 
 model OrderIntent {
@@ -1032,24 +1164,25 @@ model WhatsAppTemplate {
 }
 
 model WhatsAppConversation {
-  id            String   @id @default(cuid())
-  restaurantId  String   @map("restaurant_id")
-  integrationId String?  @map("integration_id")
-  customerId    String?  @map("customer_id")
-  customerPhone String   @map("customer_phone")
-  customerName  String?  @map("customer_name")
-  lastMessageAt DateTime @default(now()) @map("last_message_at")
-  unreadCount   Int      @default(0) @map("unread_count")
-  botPausedUntil DateTime? @map("bot_paused_until")
-  botPausedReason String?  @map("bot_paused_reason")
-  botDisabled    Boolean  @default(false) @map("bot_disabled")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  id              String    @id @default(cuid())
+  restaurantId    String    @map("restaurant_id")
+  integrationId   String?   @map("integration_id")
+  customerId      String?   @map("customer_id")
+  customerPhone   String    @map("customer_phone")
+  customerName    String?   @map("customer_name")
+  lastMessageAt   DateTime  @default(now()) @map("last_message_at")
+  unreadCount     Int       @default(0) @map("unread_count")
+  botPausedUntil  DateTime? @map("bot_paused_until")
+  botPausedReason String?   @map("bot_paused_reason")
+  botDisabled     Boolean   @default(false) @map("bot_disabled")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
   restaurant  Restaurant           @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   integration WhatsAppIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
   customer    Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
   messages    WhatsAppMessage[]
+  bookings    Booking[]
 
   @@unique([restaurantId, customerPhone])
   @@index([restaurantId, lastMessageAt])

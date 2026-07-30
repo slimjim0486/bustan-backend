@@ -8,3 +8,14 @@ export interface MenuExtractionDraft {
     }>;
   }>;
 }
+
+export interface ServiceExtractionDraft {
+  services: Array<{
+    category: string;
+    name: string;
+    nameAr: string | null;
+    priceAed: number;
+    durationMinutes: number | null;
+    description: string | null;
+  }>;
+}
