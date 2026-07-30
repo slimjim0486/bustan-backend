@@ -53,6 +53,7 @@ import { autonomyRoute } from "@/routes/autonomy";
 import { onboardingRoute } from "@/routes/onboarding";
 import { servicesRoute } from "@/routes/services";
 import { bookingsRoute } from "@/routes/bookings";
+import { depositWebhooksRoute } from "@/routes/deposit-webhooks";
 
 initSentry();
 
@@ -93,6 +94,7 @@ app.route("/api/market-pulse", marketPulseRoute);
 app.route("/api/coworker", coworkerRoute);
 app.route("/api/admin/coworker", coworkerAdminRoute);
 app.route("/api/webhooks", coworkerWebhooksRoute);
+app.route("/api/webhooks", depositWebhooksRoute);
 app.route("/api/inbox", inboxRoute);
 app.route("/api/autonomy", autonomyRoute);
 app.route("/api/onboarding", onboardingRoute);
