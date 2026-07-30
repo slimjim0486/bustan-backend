@@ -19,14 +19,18 @@
  *   railway run --service backend npm run demo:booking:seed -- --email=saleem@example.com
  *
  * Idempotent: re-running clears this tenant's bookings, payout records,
- * services/categories, and the previously demo-seeded weekly report (for the
- * same completed week) before reseeding. Customers are upserted by phone —
- * not cleared — so repeat runs don't duplicate the customer list.
+ * services/categories, and every prior demo-seeded weekly report before
+ * reseeding. It also resets the owner-chat agent so it never contradicts the
+ * salon data: all OwnerChatMemory rows, all OwnerChatMessage thread history,
+ * all OwnerWhisper/ProactiveNudge report moments, and any still-pending or
+ * still-scheduled DraftAction rows (rejected in place, not deleted) from a
+ * prior tenant era. Customers are upserted by phone — not cleared — so
+ * repeat runs don't duplicate the customer list.
  */
 
 import { createClerkClient } from "@clerk/backend";
 import type { BookingSource, BookingStatus } from "@prisma/client";
-import { Prisma } from "@prisma/client";
+import { DraftActionStatus, Prisma } from "@prisma/client";
 import { FEE_COUNTED_STATUSES } from "@/lib/booking-metrics";
 import { env } from "@/lib/env";
 import { addDays, startOfTodayGst, startOfWeekGst } from "@/lib/gst-time";
@@ -177,20 +181,46 @@ async function resolveTargetRestaurant(ownerId: string, slug: string) {
   return restaurants[0];
 }
 
-/** Deletes this tenant's booking-domain rows and the demo-seeded weekly
- *  report (for the target week only) before reseeding. Bookings are deleted
- *  before services/categories to respect the FK Restrict on
- *  Booking.service/Booking.customer. Customers are intentionally NOT cleared
- *  here — they're upserted by phone in seedCustomers(). */
-async function clearBookingDemo(restaurantId: string, weekStartDate: Date) {
-  const existingReport = await prisma.weeklyReport.findUnique({
-    where: { restaurantId_weekStart: { restaurantId, weekStart: weekStartDate } },
-    select: { id: true },
+/** Deletes this tenant's booking-domain rows AND resets its owner-chat agent
+ *  so the demo never contradicts itself with restaurant-era context.
+ *  Bookings are deleted before services/categories to respect the FK
+ *  Restrict on Booking.service/Booking.customer. Customers are intentionally
+ *  NOT cleared here — they're upserted by phone in seedCustomers().
+ *
+ *  Agent reset (all restaurant-scoped, run before reseeding):
+ *  - OwnerChatMessage: ALL rows deleted first (no FK from OwnerChatMemory/
+ *    DraftAction back to it — draftId/whisperId/etc. are the *dependent*
+ *    side), so it's safe before the weekly report/message are recreated.
+ *  - OwnerChatMemory: ALL rows deleted (stale facts/preferences about the
+ *    old restaurant).
+ *  - OwnerWhisper / ProactiveNudge / WeeklyReport: ALL rows deleted (not
+ *    just the target week) so no restaurant-era report moments resurface.
+ *  - DraftAction: NOT deleted (FK-referenced from ship history / activity
+ *    feed reads) — instead, any row still in "pending" or "scheduled"
+ *    status is neutralized to "rejected" via updateMany so stale pending
+ *    actions (e.g. an old "Sabt Pack" proposal) stop cluttering inbox
+ *    badges. Terminal-status rows (shipped/approved/rejected/expired/
+ *    failed) are left untouched as historical record. */
+async function clearBookingDemo(restaurantId: string) {
+  await prisma.ownerChatMessage.deleteMany({ where: { restaurantId } });
+  await prisma.ownerChatMemory.deleteMany({ where: { restaurantId } });
+  await prisma.ownerWhisper.deleteMany({ where: { restaurantId } });
+  await prisma.proactiveNudge.deleteMany({ where: { restaurantId } });
+  await prisma.weeklyReport.deleteMany({ where: { restaurantId } });
+
+  await prisma.draftAction.updateMany({
+    where: {
+      restaurantId,
+      status: { in: [DraftActionStatus.pending, DraftActionStatus.scheduled] },
+    },
+    data: {
+      status: DraftActionStatus.rejected,
+      decisionAt: new Date(),
+      decidedBy: null,
+      rejectionReason: "Cleared by booking-demo seed reset",
+      shipAt: null,
+    },
   });
-  if (existingReport) {
-    await prisma.ownerChatMessage.deleteMany({ where: { weeklyReportId: existingReport.id } });
-    await prisma.weeklyReport.delete({ where: { id: existingReport.id } });
-  }
 
   await prisma.booking.deleteMany({ where: { restaurantId } });
   await prisma.payoutRecord.deleteMany({ where: { restaurantId } });
@@ -502,7 +532,7 @@ async function main() {
   const weekStartIso = lastCompletedWeekStartIso(Date.now());
   const weekStartDate = new Date(weekStartIso);
 
-  await clearBookingDemo(restaurant.id, weekStartDate);
+  await clearBookingDemo(restaurant.id);
 
   const customers = await seedCustomers(restaurant.id);
   const services = await seedServices(restaurant.id);
