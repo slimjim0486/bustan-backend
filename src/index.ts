@@ -50,6 +50,7 @@ import { inboxRoute } from "@/routes/inbox";
 import { autonomyRoute } from "@/routes/autonomy";
 import { onboardingRoute } from "@/routes/onboarding";
 import { servicesRoute } from "@/routes/services";
+import { bookingsRoute } from "@/routes/bookings";
 
 initSentry();
 
@@ -94,6 +95,7 @@ app.route("/api/inbox", inboxRoute);
 app.route("/api/autonomy", autonomyRoute);
 app.route("/api/onboarding", onboardingRoute);
 app.route("/api/services", servicesRoute);
+app.route("/api/bookings", bookingsRoute);
 
 serve(
   {
