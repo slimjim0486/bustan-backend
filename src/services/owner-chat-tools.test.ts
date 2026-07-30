@@ -16,3 +16,15 @@ test("getOwnerTools returns stable references (prompt-cache safety)", () => {
   assert.equal(getOwnerTools(true), getOwnerTools(true));
   assert.equal(getOwnerTools(false), getOwnerTools(false));
 });
+
+test("booking tools are registered alongside the snapshot tool", () => {
+  const names = getOwnerTools(false).map((tool) => tool.name);
+  assert.deepEqual(names, [
+    "get_business_snapshot",
+    "get_today_bookings",
+    "get_week_new_customers",
+    "get_no_show_rate",
+    "get_top_services",
+    "get_quiet_slots",
+  ]);
+});
