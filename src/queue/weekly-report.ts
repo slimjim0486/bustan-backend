@@ -145,6 +145,10 @@ async function fanOutWeeklyReportJobs() {
 
   const candidates = await prisma.restaurant.findMany({
     where: {
+      // Booking-era tenants only — the snapshot builder is bookings-only, so
+      // grandfathered RESTAURANT-businessType tenants would get all-zero,
+      // wrong-domain reports.
+      businessType: { in: ["SALON", "HOME_SERVICES"] },
       subscriptionStatus: { in: ["active", "trial"] },
       weeklyReports: { none: { weekStart: weekStartDate } },
       OR: [
@@ -410,6 +414,17 @@ async function processGenerateJob(job: GenerateWorkerJob) {
 
 /** Manual trigger for testing — used by the admin endpoint. */
 export async function enqueueWeeklyReportForRestaurant(restaurantId: string, weekStart?: string) {
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { businessType: true },
+  });
+  if (!restaurant || !["SALON", "HOME_SERVICES"].includes(restaurant.businessType)) {
+    console.warn(
+      `[weekly-report] skipping manual enqueue for ${restaurantId}: not a booking-era tenant`
+    );
+    return;
+  }
+
   await ensureGenerateQueue();
   const queue = await getBoss();
   await queue.send(
