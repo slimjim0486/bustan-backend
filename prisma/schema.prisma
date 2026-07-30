@@ -350,6 +350,7 @@ model Restaurant {
   newCustomerFeeAed      Int?               @map("new_customer_fee_aed")
   depositAed             Int?               @map("deposit_aed")
   bookingPolicies        Json?              @map("booking_policies")
+  parallelCapacity       Int                @default(2) @map("parallel_capacity")
   onboardingStep         Int                @default(1) @map("onboarding_step")
   onboardingCompleted    Json?              @map("onboarding_completed")
   // B1b real autonomy. Owner master opt-in (default OFF): the plan entitlement
