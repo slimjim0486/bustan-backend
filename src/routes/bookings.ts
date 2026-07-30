@@ -19,6 +19,7 @@ import { errorResponse } from "@/lib/http";
 import { prisma } from "@/lib/prisma";
 import { normalizeUaePhone } from "@/lib/uae-phone";
 import { requireAuth } from "@/middleware/auth";
+import { resolveBooking } from "@/services/booking-resolution";
 
 const statusCsv = z
   .string()
@@ -250,9 +251,11 @@ export const bookingsRoute = bookingsRouteBase
       if (!booking) throw new ApiError("Booking not found", 404);
       assertStatusTransition(booking.status, status);
 
-      const updated = await prisma.booking.update({
+      const result = await resolveBooking({ restaurantId, bookingId: booking.id, status });
+      if (!result.ok) throw new ApiError(`Cannot mark a ${booking.status} booking as ${status}`, 400);
+
+      const updated = await prisma.booking.findUniqueOrThrow({
         where: { id: booking.id },
-        data: { status, resolvedAt: new Date() },
         include: bookingInclude,
       });
       return c.json({ booking: updated });
