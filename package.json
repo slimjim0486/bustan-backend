@@ -18,6 +18,7 @@
     "market-pulse:trigger": "tsx scripts/competitor-intel-trigger.ts",
     "orders-v1:enable": "tsx scripts/enable-orders-v1.ts",
     "demo:sales:seed": "tsx src/scripts/seed-sales-demo.ts",
+    "demo:booking:seed": "tsx src/scripts/seed-booking-demo.ts",
     "coworker:submit-templates": "tsx scripts/coworker-submit-templates.ts",
     "backfill:staged-draft-hero-dish": "tsx scripts/backfill-staged-draft-hero-dish.ts",
     "backfill:dedupe-drafts": "tsx scripts/backfill-dedupe-resurrected-drafts.ts",
