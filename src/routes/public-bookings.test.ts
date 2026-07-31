@@ -66,3 +66,20 @@ test("serializePublicBooking is null-safe for missing whatsapp integration and c
   assert.equal(payload.businessWhatsApp, null);
   assert.equal(payload.customerFirstName, null);
 });
+
+test("rateLimitKeys: per-booking bucket varies by bookingId, per-IP bucket does not", async () => {
+  const { rateLimitKeys } = await import("./public-bookings.js");
+
+  const guessA = rateLimitKeys("1.2.3.4", "cmdz1a2b3c4d5e6f7g8h9");
+  const guessB = rateLimitKeys("1.2.3.4", "cmdz9z8y7x6w5v4u3t2s1");
+  const otherIp = rateLimitKeys("5.6.7.8", "cmdz1a2b3c4d5e6f7g8h9");
+
+  // Different booking IDs from the same IP get different per-booking keys
+  // (so bucket 1 alone would never engage against enumeration)...
+  assert.notEqual(guessA.perBookingKey, guessB.perBookingKey);
+  // ...but the per-IP bucket is identical across every guess from that IP,
+  // which is what actually makes enumeration trip a limit.
+  assert.equal(guessA.perIpKey, guessB.perIpKey);
+  // A different IP gets its own per-IP bucket.
+  assert.notEqual(guessA.perIpKey, otherIp.perIpKey);
+});

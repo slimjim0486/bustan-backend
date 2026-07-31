@@ -20,6 +20,18 @@
 // with no (or a non-frontend) Origin/Referer header. Enforcing an origin
 // allowlist would break that access path without adding real protection,
 // since the ID itself is already the unguessable secret.
+//
+// Two separate rate-limit buckets, each guarding a different threat:
+//   1. `public-bookings:<ip>:<bookingId>` (tight, 30/min) — throttles
+//      hammering of one already-known booking ID (e.g. a broken poller).
+//   2. `public-bookings:ip:<ip>` (loose, 120/min) — the actual defence
+//      against ID enumeration/scraping: every guessed ID gets its own
+//      bucket-1 key, so bucket 1 alone never engages across many distinct
+//      IDs from the same IP. Bucket 2 is IP-wide (no bookingId in the
+//      key) so it accumulates across every guess and trips before an
+//      enumeration sweep gets far, while staying well above what a single
+//      legitimate customer polling status every ~3s (or hitting checkout
+//      once) would ever produce.
 import { Hono } from "hono";
 import { errorResponse } from "@/lib/http";
 import { ApiError } from "@/lib/errors";
@@ -83,12 +95,22 @@ export function serializePublicBooking(booking: PublicBookingSource): PublicBook
   };
 }
 
+export function rateLimitKeys(ip: string, bookingId: string) {
+  return {
+    perBookingKey: `public-bookings:${ip}:${bookingId}`,
+    perIpKey: `public-bookings:ip:${ip}`,
+  };
+}
+
 function rateLimitBookingRequest(c: import("hono").Context, bookingId: string) {
-  assertRateLimit({
-    key: `public-bookings:${getClientIp(c)}:${bookingId}`,
-    limit: 30,
-    windowMs: 60_000,
-  });
+  const { perBookingKey, perIpKey } = rateLimitKeys(getClientIp(c), bookingId);
+
+  // Bucket 1: single-ID hammering guard.
+  assertRateLimit({ key: perBookingKey, limit: 30, windowMs: 60_000 });
+
+  // Bucket 2: IP-wide guard — this is the one that actually engages
+  // against enumeration, since it has no bookingId in its key.
+  assertRateLimit({ key: perIpKey, limit: 120, windowMs: 60_000 });
 }
 
 publicBookingsRoute.get("/:bookingId", async (c) => {
