@@ -32,7 +32,9 @@ import {
 } from "@/services/booking-agent/prompts";
 import {
   BOOKING_AGENT_TOOLS,
+  GUARD_PAUSE_MS,
   executeBookingAgentTool,
+  pauseConversationForOwner,
   type BookingAgentToolContext,
 } from "@/services/booking-agent/tools";
 
@@ -86,6 +88,58 @@ function isBookingBusinessType(value: string): value is BookingBusinessType {
   return value === "SALON" || value === "HOME_SERVICES";
 }
 
+/** One persisted WhatsApp row, as far as history normalization cares. */
+export interface BookingAgentHistoryRow {
+  direction: string;
+  body: string | null;
+}
+
+/**
+ * Turns persisted WhatsApp rows into a message list the Messages API will
+ * actually accept. Mirrors the normalization the archived concierge did in
+ * `lib/concierge/index.ts` (`prepareMessages`), for the same three reasons:
+ *
+ *   1. The window MUST start on a `user` turn or the API 400s. A returning
+ *      customer's last 20 rows very often open on an outbound row, because
+ *      Phase 4's own lifecycle jobs write reminders, deposit nudges and
+ *      confirmation templates into this same conversation.
+ *   2. Adjacent same-role turns must be merged. WhatsApp customers send bursts
+ *      ("hi" / "are you open" / "tomorrow?"), which would otherwise produce
+ *      consecutive user turns.
+ *   3. The window MUST NOT end on an `assistant` turn — the API reads a trailing
+ *      assistant message as a prefill to continue, not as history.
+ *
+ * Pure and total: exported so the ordering rules are testable without a DB.
+ */
+export function prepareAgentMessages(
+  rows: BookingAgentHistoryRow[]
+): Anthropic.MessageParam[] {
+  const normalized: Array<{ role: "user" | "assistant"; content: string }> = [];
+
+  for (const row of rows) {
+    const body = row.body?.trim();
+    if (!body) continue;
+
+    const role = row.direction === "inbound" ? "user" : "assistant";
+    const content = role === "user" ? wrapCustomerMessage(body) : body;
+
+    const previous = normalized.at(-1);
+    if (previous?.role === role) {
+      previous.content = `${previous.content}\n\n${content}`;
+      continue;
+    }
+    normalized.push({ role, content });
+  }
+
+  // Order matters: merge first (above) so roles strictly alternate, then trim
+  // both ends. After the leading strip the list starts on `user`, so the
+  // trailing pop can remove at most the final assistant turn.
+  while (normalized[0]?.role === "assistant") normalized.shift();
+  while (normalized.at(-1)?.role === "assistant") normalized.pop();
+
+  return normalized.map((message) => ({ role: message.role, content: message.content }));
+}
+
 function policiesOf(bookingPolicies: unknown): BookingAgentPromptContext["policies"] {
   if (!bookingPolicies || typeof bookingPolicies !== "object" || Array.isArray(bookingPolicies)) {
     return {};
@@ -98,16 +152,30 @@ function policiesOf(bookingPolicies: unknown): BookingAgentPromptContext["polici
   };
 }
 
-async function pauseForOwner(
+/**
+ * Hands the thread to a human without an LLM call. Uses the SHORT guard pause,
+ * not the 24h escalation pause: these paths fire on a heuristic (injection regex
+ * tuned for owner-authored text) or on missing data, so a false positive must
+ * not mute a paying customer for a full day.
+ */
+async function pauseForGuard(
   conversationId: string,
   restaurantId: string,
   reason: string
 ): Promise<void> {
-  await executeBookingAgentTool(
-    "escalate_to_owner",
-    { reason },
-    { restaurantId, conversationId, customerId: "", customerPhone: "" }
-  );
+  try {
+    await pauseConversationForOwner({
+      restaurantId,
+      conversationId,
+      reason,
+      pauseMs: GUARD_PAUSE_MS,
+      notifyOwner: true,
+    });
+  } catch (error) {
+    // The handoff line still goes out; a failed pause write must not throw the
+    // customer's turn away.
+    console.error("[booking-agent] guard pause failed", error);
+  }
 }
 
 /**
@@ -170,10 +238,10 @@ export async function runBookingAgentTurn(
   // Injection check runs BEFORE any model call: a hit costs zero tokens and
   // hands the thread to a human instead of arguing with the customer.
   if (matchesInjection(latestInbound.body)) {
-    await pauseForOwner(
+    await pauseForGuard(
       conversation.id,
       conversation.restaurantId,
-      "Possible prompt-injection attempt — bot paused, please review this chat."
+      "Possible prompt-injection attempt — bot paused briefly, please review this chat."
     );
     return { text: HANDOFF_REPLY, escalated: true, inputTokens: 0, outputTokens: 0 };
   }
@@ -181,7 +249,7 @@ export async function runBookingAgentTurn(
   if (!conversation.customerId) {
     // Every tool (and the fee/newness math) is keyed on a Customer row. Without
     // one we can't book, so hand over rather than half-answer.
-    await pauseForOwner(
+    await pauseForGuard(
       conversation.id,
       conversation.restaurantId,
       "No customer record on this conversation — bot paused, please reply manually."
@@ -218,22 +286,7 @@ export async function runBookingAgentTurn(
     depositAed: restaurant.depositAed ?? 0,
   });
 
-  const messages: Anthropic.MessageParam[] = [];
-  for (const row of history) {
-    const body = row.body?.trim();
-    if (!body) continue;
-    messages.push(
-      row.direction === "inbound"
-        ? { role: "user", content: wrapCustomerMessage(body) }
-        : { role: "assistant", content: body }
-    );
-  }
-  // The API treats a trailing assistant turn as a prefill; drop any outbound
-  // rows that landed after the customer's last message (delivery receipts,
-  // a template we fired) so the turn ends on the customer.
-  while (messages.length && messages[messages.length - 1].role === "assistant") {
-    messages.pop();
-  }
+  const messages = prepareAgentMessages(history);
   if (!messages.length) {
     return { text: null, escalated: false, inputTokens: 0, outputTokens: 0 };
   }

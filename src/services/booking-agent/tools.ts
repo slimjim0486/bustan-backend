@@ -20,6 +20,7 @@ import { RELATIONSHIP_STATUSES, computeBookingFee, isNewCustomer } from "@/lib/b
 import { formatSlotGst } from "@/lib/booking-templates";
 import { prisma } from "@/lib/prisma";
 import { scheduleDepositLifecycle } from "@/queue/booking-expiry";
+import { sendCoworkerText } from "@/services/coworker/sender";
 import { payUrlFor } from "@/services/deposits";
 import {
   parseOperatingHoursJson,
@@ -35,7 +36,14 @@ const MAX_AVAILABILITY_DAYS = 14;
 /** Few enough to read in one WhatsApp bubble. */
 const MAX_SLOTS_RETURNED = 12;
 const MAX_ALTERNATIVES = 3;
-const BOT_PAUSE_MS = 24 * 60 * 60 * 1000;
+/** A genuine escalation: the customer needs a human, so the bot stands down for
+ *  a full day and the owner owns the thread. */
+export const ESCALATION_PAUSE_MS = 24 * 60 * 60 * 1000;
+/** A guard trip (prompt-injection heuristic) is NOT a confirmed escalation. The
+ *  patterns were tuned for owner-authored text, where a false positive cost one
+ *  refusal line; here it costs a customer-facing mute, so the blast radius is
+ *  deliberately an hour rather than a day. */
+export const GUARD_PAUSE_MS = 60 * 60 * 1000;
 const PAUSE_REASON_MAX_CHARS = 200;
 
 export const BOOKING_AGENT_TOOLS: Anthropic.Tool[] = [
@@ -431,7 +439,21 @@ async function createBooking(
   // Schedules the +5h nudge and the +6h expiry. Called exactly once per
   // DEPOSIT_SENT transition — the two queue.sends inside are not atomic
   // (known, accepted), so retrying here would risk duplicate nudges.
-  await scheduleDepositLifecycle(booking.id, new Date());
+  //
+  // Isolated from the outer catch ON PURPOSE. The booking row already exists and
+  // is holding the slot; if we let a queue failure fall through to tool_failed,
+  // the customer never receives a pay link, nothing ever expires the row, and
+  // the model may retry only to hit slot_taken against its own orphan. A booking
+  // with a pay link but no expiry job is strictly better than a held slot with
+  // no link — it is recoverable by hand, and the customer can still pay.
+  try {
+    await scheduleDepositLifecycle(booking.id, new Date());
+  } catch (error) {
+    console.error(
+      `[booking-agent] scheduleDepositLifecycle failed for booking=${booking.id} — booking is live with NO expiry/nudge job, needs manual sweep`,
+      error
+    );
+  }
 
   return {
     content: json({
@@ -443,25 +465,79 @@ async function createBooking(
   };
 }
 
+/**
+ * Best-effort ping to the owner's coworker thread. Deliberately swallows every
+ * failure: no CoworkerOwner row, a closed 24h window, or a WhatsApp error must
+ * never break the customer's turn. The paused conversation in the CRM inbox is
+ * the real, durable signal — this is only a nudge on top of it.
+ */
+async function notifyOwnerOfEscalation(restaurantId: string, reason: string): Promise<void> {
+  try {
+    const owner = await prisma.coworkerOwner.findUnique({ where: { restaurantId } });
+    if (!owner) return;
+    if (!owner.windowExpiresAt || owner.windowExpiresAt < new Date()) return;
+
+    const result = await sendCoworkerText({
+      coworkerOwnerId: owner.id,
+      restaurantId,
+      body: `A customer on WhatsApp needs you: ${reason} I've paused the booking bot on that chat — reply to them from your inbox.`,
+    });
+    if (result.status === "failed") {
+      console.warn(`[booking-agent] owner escalation ping failed: ${result.errorMessage ?? "unknown"}`);
+    }
+  } catch (error) {
+    console.warn("[booking-agent] owner escalation ping threw", error);
+  }
+}
+
+/**
+ * Pauses the bot on a conversation and flags it unread for the owner. Shared by
+ * the escalate_to_owner tool and the agent's pre-LLM guard path so both write
+ * the pause exactly the same way — only the duration and the reason differ.
+ */
+export async function pauseConversationForOwner(args: {
+  restaurantId: string;
+  conversationId: string;
+  reason: string;
+  pauseMs: number;
+  notifyOwner?: boolean;
+}): Promise<void> {
+  await prisma.whatsAppConversation.updateMany({
+    where: { id: args.conversationId, restaurantId: args.restaurantId },
+    data: {
+      botPausedUntil: new Date(Date.now() + args.pauseMs),
+      botPausedReason: args.reason.slice(0, PAUSE_REASON_MAX_CHARS),
+      unreadCount: { increment: 1 },
+    },
+  });
+
+  if (args.notifyOwner) {
+    await notifyOwnerOfEscalation(args.restaurantId, args.reason);
+  }
+}
+
 async function escalateToOwner(
   input: Record<string, unknown>,
   ctx: BookingAgentToolContext
 ): Promise<BookingAgentToolResult> {
   const reason = asString(input, "reason") ?? "Customer needs a human.";
 
-  await prisma.whatsAppConversation.updateMany({
-    where: { id: ctx.conversationId, restaurantId: ctx.restaurantId },
-    data: {
-      botPausedUntil: new Date(Date.now() + BOT_PAUSE_MS),
-      botPausedReason: reason.slice(0, PAUSE_REASON_MAX_CHARS),
-      unreadCount: { increment: 1 },
-    },
+  await pauseConversationForOwner({
+    restaurantId: ctx.restaurantId,
+    conversationId: ctx.conversationId,
+    reason,
+    pauseMs: ESCALATION_PAUSE_MS,
+    notifyOwner: true,
   });
 
   return {
     content: json({
       escalated: true,
-      note: "The owner has been notified and will reply here. Tell the customer someone from the team will get back to them shortly, then stop.",
+      // Says only what is actually guaranteed: the chat is flagged unread in the
+      // owner's inbox. The owner ping above is best-effort and may not land, so
+      // promising "the owner has been notified" would be a lie we make the model
+      // tell the customer.
+      note: "This chat has been flagged to the team's inbox and you are paused on it. Tell the customer someone from the team will reply here shortly, then stop.",
     }),
     escalated: true,
   };
