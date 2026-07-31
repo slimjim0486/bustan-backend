@@ -188,9 +188,19 @@ export async function startBookingExpiryWorker() {
   await Promise.all([ensureNudgeQueue(), ensureExpiryQueue()]);
   const queue = await getBoss();
 
+  // Review fix (Important 3b): batchSize:1, not 4, for the nudge queue only.
+  // pg-boss's Manager#watch calls the handler once with the whole fetched
+  // batch and, on a rejected promise, fails EVERY jobId in the batch (see
+  // manager.js's onFetch) — not just the one whose iteration threw. processNudgeJob
+  // sends a customer-facing WhatsApp send/template; with batchSize 4 and this
+  // throwing per-job loop, a nudge that already sent in slot 1 could be
+  // retried (re-sending it) purely because slot 2's job threw. batchSize:1
+  // makes each fetch/complete/fail cycle cover exactly one job.
+  // sendBookingText/Template's idempotencyKey pre-check (Important 3a) is
+  // the second, independent backstop.
   await queue.work<BookingLifecycleJobData>(
     BOOKING_NUDGE_JOB,
-    { batchSize: 4, includeMetadata: true } as PgBoss.WorkOptions,
+    { batchSize: 1, includeMetadata: true } as PgBoss.WorkOptions,
     async (jobs) => {
       for (const job of jobs as unknown as LifecycleWorkerJob[]) {
         try {
@@ -206,6 +216,13 @@ export async function startBookingExpiryWorker() {
     }
   );
 
+  // Left at batchSize:4, unlike the nudge queue above: processExpiryJob sends
+  // no WhatsApp message at all, only a status-gated `updateMany` keyed on
+  // `status: "DEPOSIT_SENT"` — replaying it against a batch-sibling's failure
+  // is a race-safe no-op (a booking already flipped to EXPIRED, or moved on
+  // to CONFIRMED by a concurrent confirm, just fails the WHERE match), so the
+  // batch-wide fail-together behavior described above has no customer-facing
+  // consequence here.
   await queue.work<BookingLifecycleJobData>(
     BOOKING_EXPIRY_JOB,
     { batchSize: 4, includeMetadata: true } as PgBoss.WorkOptions,

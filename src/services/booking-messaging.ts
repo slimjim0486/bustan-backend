@@ -40,6 +40,31 @@ async function isWindowOpen(conversationId: string): Promise<boolean> {
   return Boolean(lastInbound && Date.now() - lastInbound.createdAt.getTime() <= WINDOW_MS);
 }
 
+/**
+ * Review fix (Important 3a): previously dedup only happened via a P2002
+ * catch on persistOutbound, which runs AFTER the Meta send has already gone
+ * out — so a retried job (e.g. a pg-boss batch retry triggered by a
+ * different job in the same batch failing, see the worker loops in
+ * booking-agent-reply.ts/booking-reminders.ts/booking-expiry.ts) would
+ * re-send the exact same customer-facing WhatsApp message before the
+ * dedup check ever engaged, and only then discover the DB row already
+ * existed. Checking BEFORE the send closes that window: a retry whose
+ * first attempt already got as far as recording the WhatsAppMessage row
+ * short-circuits here and never calls Meta again. The post-send P2002
+ * catch in persistOutbound stays in place as a backstop for the remaining
+ * race (two attempts reaching this check concurrently before either has
+ * persisted its row).
+ */
+async function findAlreadySent(
+  idempotencyKey: string | undefined
+): Promise<{ providerMessageId: string | null } | null> {
+  if (!idempotencyKey) return null;
+  return prisma.whatsAppMessage.findUnique({
+    where: { idempotencyKey },
+    select: { providerMessageId: true },
+  });
+}
+
 async function persistOutbound(input: {
   restaurantId: string;
   conversationId: string;
@@ -84,7 +109,12 @@ export async function sendBookingTemplate(input: {
   language?: "en" | "ar";
   parameters: string[];
   idempotencyKey?: string;
-}): Promise<{ sent: boolean; providerMessageId?: string; reason?: string }> {
+}): Promise<{ sent: boolean; providerMessageId?: string; reason?: string; deduped?: boolean }> {
+  const alreadySent = await findAlreadySent(input.idempotencyKey);
+  if (alreadySent) {
+    return { sent: true, deduped: true, providerMessageId: alreadySent.providerMessageId ?? undefined };
+  }
+
   const integration = await loadIntegration(input.restaurantId);
   if (!integration) return { sent: false, reason: "no_integration" };
 
@@ -139,7 +169,12 @@ export async function sendBookingText(input: {
    *  reply worker (Task 12) so a later staleness check can tell "already
    *  answered" rows apart from ones still awaiting a reply. */
   answersUpToSeq?: bigint;
-}): Promise<{ sent: boolean; reason?: string; providerMessageId?: string }> {
+}): Promise<{ sent: boolean; reason?: string; providerMessageId?: string; deduped?: boolean }> {
+  const alreadySent = await findAlreadySent(input.idempotencyKey);
+  if (alreadySent) {
+    return { sent: true, deduped: true, providerMessageId: alreadySent.providerMessageId ?? undefined };
+  }
+
   const integration = await loadIntegration(input.restaurantId);
   if (!integration) return { sent: false, reason: "no_integration" };
 

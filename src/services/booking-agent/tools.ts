@@ -16,7 +16,12 @@ import {
   computeAvailableSlots,
   type ExistingBooking,
 } from "@/lib/booking-availability";
-import { RELATIONSHIP_STATUSES, computeBookingFee, isNewCustomer } from "@/lib/booking-fee";
+import {
+  RELATIONSHIP_STATUSES,
+  computeBookingFee,
+  isNewCustomer,
+  validateDepositConfig,
+} from "@/lib/booking-fee";
 import { formatSlotGst } from "@/lib/booking-templates";
 import { prisma } from "@/lib/prisma";
 import { scheduleDepositLifecycle } from "@/queue/booking-expiry";
@@ -405,6 +410,38 @@ async function createBooking(
     isNewCustomer: newCustomer,
     tenantFeeAed: restaurant.newCustomerFeeAed,
   });
+
+  // Review fix (Important 2): a tenant with depositAed unset (NULL) passed
+  // the DB CHECK (which only fires when BOTH columns are non-null) but the
+  // `?? 0` fallback above then produced a booking with depositAed:0 and a
+  // Stripe Checkout session with unit_amount 0 — Stripe rejects that outright,
+  // so the customer got a dead pay link with no way forward. Refuse to create
+  // the booking at all in that case (or if a fee is configured above the
+  // deposit) and escalate to the owner instead, using the exact same
+  // pause+notify path as the escalate_to_owner tool so the owner sees it in
+  // their inbox immediately rather than depending on the model reliably
+  // calling escalate_to_owner itself off the back of an error string.
+  const depositCheck = validateDepositConfig({ depositAed, feeAed });
+  if (!depositCheck.ok) {
+    console.error(
+      `[booking-agent] refusing create_booking: deposit misconfigured for restaurant=${ctx.restaurantId} service=${service.id} reason=${depositCheck.reason} depositAed=${depositAed} feeAed=${feeAed}`
+    );
+    await pauseConversationForOwner({
+      restaurantId: ctx.restaurantId,
+      conversationId: ctx.conversationId,
+      reason: `Customer wants to book ${service.name} but online deposits aren't fully set up (${depositCheck.reason}) — needs a manual booking.`,
+      pauseMs: ESCALATION_PAUSE_MS,
+      notifyOwner: true,
+    });
+    return {
+      content: json({
+        error: depositCheck.reason,
+        escalated: true,
+        note: "Online booking isn't fully set up for this business yet, so you cannot take a deposit right now. Apologize to the customer, tell them someone from the team will confirm their booking shortly, and stop replying.",
+      }),
+      escalated: true,
+    };
+  }
 
   const booking = await prisma.booking.create({
     data: {

@@ -5,10 +5,19 @@
 // (Meta expects a fast 200, and a model call can take seconds).
 //
 // Two defences against out-of-order / duplicate replies:
-//   - staleness check: if a newer inbound message already landed on this
+//   - staleness check: if a newer inbound TEXT message already landed on this
 //     conversation by the time the job runs, skip — that message's own job
 //     will answer everything, including this one, in one turn (agent.ts reads
-//     the full history, not just the triggering message).
+//     the full history, not just the triggering message). Restricted to
+//     type:"text" (review fix, Important 1): jobs are only ever enqueued for
+//     messageType==="text" (see whatsapp-webhooks.ts's dispatch gate), so a
+//     non-text follow-up (voice note, image, sticker...) never gets a job of
+//     its own. Comparing against the newest inbound message of ANY type meant
+//     a text's job would see a later voice note's higher seq, treat itself as
+//     stale, and skip — but nothing else was ever going to answer it, since
+//     the voice note has no job. Net effect: the text silently never got a
+//     reply. Comparing only against the newest inbound TEXT instead means a
+//     later non-text message can no longer starve an earlier text's reply.
 //   - idempotencyKey `agent:${conversationId}:${inboundSeq}` on the outbound
 //     send: a pg-boss retry of the same job can't double-send.
 //
@@ -77,12 +86,19 @@ async function processReplyJob(job: ReplyWorkerJob) {
   });
   if (!conversation) return;
 
-  // Staleness check: a newer inbound message already landed on this
+  // Staleness check: a newer inbound TEXT message already landed on this
   // conversation. That message's own job will answer everything (agent.ts
   // reads the full persisted history each turn), so answering here too would
   // either duplicate or race it out of order.
+  //
+  // Review fix (Important 1): filtered to type:"text" only. Jobs are only
+  // ever enqueued for messageType==="text", so comparing against the newest
+  // inbound message of ANY type let a same-conversation non-text follow-up
+  // (e.g. a voice note sent 3s after a text) silently kill the text's reply —
+  // the text's job would see the voice note's higher seq and skip, but the
+  // voice note itself never got a job to answer on its behalf.
   const newestInbound = await prisma.whatsAppMessage.findFirst({
-    where: { conversationId, direction: "inbound" },
+    where: { conversationId, direction: "inbound", type: "text" },
     orderBy: { seq: "desc" },
     select: { seq: true },
   });
@@ -150,9 +166,23 @@ export async function startBookingAgentReplyWorker() {
   await ensureQueue();
   const queue = await getBoss();
 
+  // Review fix (Important 3b): batchSize was 4 with a throwing per-job loop.
+  // pg-boss's Manager#watch (node_modules/pg-boss/src/manager.js) calls the
+  // handler once with the WHOLE batch and, if the returned promise rejects,
+  // calls `this.fail(name, jobIds, err)` for every jobId in that batch — not
+  // just the one that threw. So job 1 in a batch of 4 could send its
+  // customer-facing WhatsApp message successfully, job 2 could then throw,
+  // and job 1 would be marked failed and retried alongside job 2 — re-sending
+  // a message the customer already received. Per-job try/catch inside the
+  // loop doesn't fix this: the loop still rethrows after the failing job,
+  // which fails the batch pg-boss already fetched together. batchSize:1
+  // makes each pg-boss fetch/complete/fail cycle cover exactly one job, so a
+  // failure can only ever retry the job that actually failed. (sendBookingText's
+  // idempotencyKey pre-check, Important 3a, is the second, independent layer:
+  // even if a retry does happen, it can no longer re-send.)
   await queue.work<BookingAgentReplyJobData>(
     BOOKING_AGENT_REPLY_JOB,
-    { batchSize: 4, includeMetadata: true } as PgBoss.WorkOptions,
+    { batchSize: 1, includeMetadata: true } as PgBoss.WorkOptions,
     async (jobs) => {
       for (const job of jobs as unknown as ReplyWorkerJob[]) {
         try {

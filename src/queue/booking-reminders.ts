@@ -201,9 +201,18 @@ export async function startBookingRemindersWorker() {
   await Promise.all([ensureReminderQueue(), ensureResolutionPromptQueue()]);
   const queue = await getBoss();
 
+  // Review fix (Important 3b): batchSize:1, not 4. pg-boss's Manager#watch
+  // calls the handler once with the whole fetched batch and, on a rejected
+  // promise, fails EVERY jobId in that batch (see manager.js's onFetch) — not
+  // just the one whose iteration threw. With batchSize 4 and this throwing
+  // per-job loop, a reminder that already sent successfully in slot 1 could
+  // be marked failed and retried (re-sending the customer's reminder) purely
+  // because slot 2's job threw. batchSize:1 makes each fetch/complete/fail
+  // cycle cover exactly one job. sendBookingTemplate's idempotencyKey
+  // pre-check (Important 3a) is the second, independent backstop.
   await queue.work<BookingReminderJobData>(
     BOOKING_REMINDER_JOB,
-    { batchSize: 4, includeMetadata: true } as PgBoss.WorkOptions,
+    { batchSize: 1, includeMetadata: true } as PgBoss.WorkOptions,
     async (jobs) => {
       for (const job of jobs as unknown as ReminderWorkerJob[]) {
         try {
@@ -219,9 +228,11 @@ export async function startBookingRemindersWorker() {
     }
   );
 
+  // Same reasoning as above — sendCoworkerButtons is a customer/owner-facing
+  // send that must not be replayed just because a batch-sibling job failed.
   await queue.work<BookingResolutionPromptJobData>(
     BOOKING_RESOLUTION_PROMPT_JOB,
-    { batchSize: 4, includeMetadata: true } as PgBoss.WorkOptions,
+    { batchSize: 1, includeMetadata: true } as PgBoss.WorkOptions,
     async (jobs) => {
       for (const job of jobs as unknown as ResolutionPromptWorkerJob[]) {
         try {

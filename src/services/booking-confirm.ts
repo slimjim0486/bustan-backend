@@ -90,7 +90,16 @@ async function runTransition(input: {
     }
 
     const decision = decideConfirmTransition(booking.status);
-    if (decision === "reject") return { outcome: "rejected" as const };
+    if (decision === "reject") {
+      // Minor review fix: a paid deposit landing on a CANCELLED booking is a
+      // real anomaly (money moved on a booking the business explicitly
+      // killed) — make it visible instead of a silent {outcome:"rejected"}
+      // the caller may not surface anywhere.
+      console.error(
+        `[booking-confirm] rejected: paid deposit webhook for CANCELLED booking=${booking.id} stripeSessionId=${input.stripeSessionId}`
+      );
+      return { outcome: "rejected" as const };
+    }
     if (decision === "already_done") return { outcome: "already_done" as const };
 
     const updateResult = await tx.booking.updateMany({
