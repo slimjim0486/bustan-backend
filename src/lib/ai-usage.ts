@@ -16,6 +16,7 @@ export type AiFeature =
   | "seo_analysis"
   | "ad_studio_project"
   | "sous_chef_message"
+  | "booking_agent"
   | "ad_studio_image"
   | "ad_studio_image_openai"
   | "review_reply_draft"
@@ -41,6 +42,8 @@ function getTokenPricing(feature: AiFeature) {
     case "owner_chat_weekly":
     case "owner_chat_nudge":
     case "sous_chef_message":
+    // Booking agent runs on the default (haiku) tier, same as sous chef.
+    case "booking_agent":
     case "competitor_intel_digest":
     case "arabic_translate":
       return TOKEN_PRICING_USD.haiku;

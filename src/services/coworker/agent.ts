@@ -14,6 +14,7 @@
 // service-conversation per fragment and read terribly in WhatsApp UI.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { checkInjection } from "@/lib/agent-guards";
 import { estimateAiUsageCost, logAiUsage } from "@/lib/ai-usage";
 import { getRestaurantEntitlements } from "@/lib/entitlements";
 import { env } from "@/lib/env";
@@ -30,18 +31,9 @@ const THREAD_HISTORY_LIMIT = 20;
 // Hard cap so a runaway response never exceeds WhatsApp's 4096-char text body limit.
 const WA_REPLY_MAX_CHARS = 3500;
 
-// Same injection patterns the dashboard route uses, so a WhatsApp owner who
-// tries the same trick gets the same refusal.
-const INJECTION_PATTERNS = [
-  /ignore\s+(all\s+)?(previous|prior|above|your)\s+(instructions|rules|prompts?)/i,
-  /forget\s+(all\s+)?(previous|prior|above|your)\s+(instructions|rules|prompts?)/i,
-  /disregard\s+(all\s+)?(previous|prior|above|your)\s+(instructions|rules|prompts?)/i,
-  /new\s+(system\s+)?(instructions?|rules?|prompt)/i,
-  /system\s*:\s*/i,
-  /\[INST\]/i,
-  /<<\s*SYS\s*>>/i,
-  /jailbreak/i,
-];
+// Injection patterns + checkInjection now live in lib/agent-guards.ts, shared
+// with the customer-facing booking agent. Same patterns, same refusal string —
+// behaviour here is unchanged by the move.
 
 let anthropic: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -52,13 +44,6 @@ function getClient(): Anthropic {
     anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
   }
   return anthropic;
-}
-
-function checkInjection(message: string): string | null {
-  for (const pattern of INJECTION_PATTERNS) {
-    if (pattern.test(message)) return OWNER_AGENT.injectionRefusal;
-  }
-  return null;
 }
 
 function clampReply(text: string): string {
