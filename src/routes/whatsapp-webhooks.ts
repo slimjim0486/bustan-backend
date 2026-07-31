@@ -15,6 +15,8 @@ import { detectLanguage } from "@/lib/language-detect";
 import { captureException } from "@/lib/sentry";
 import { extractCtwaReferral } from "@/lib/ctwa-referral";
 import { resolveAdProjectByMetaAdId } from "@/lib/ctwa-resolver";
+import { enqueueBookingAgentReply } from "@/queue/booking-agent-reply";
+import { shouldDispatchBookingAgent } from "@/services/booking-agent/gate";
 
 /**
  * H7 fix: cap webhook-supplied display names to prevent stored-XSS surfaces
@@ -114,6 +116,7 @@ async function handleInboundMessage(input: {
       type: true,
       createdAt: true,
       conversationId: true,
+      seq: true,
       conversation: {
         select: {
           botPausedUntil: true,
@@ -130,6 +133,7 @@ async function handleInboundMessage(input: {
       messageId: existingMessage.id,
       messageType: existingMessage.type,
       occurredAt: existingMessage.createdAt,
+      seq: existingMessage.seq,
       language: detectedLanguage,
       consentCommand,
       body,
@@ -309,6 +313,7 @@ async function handleInboundMessage(input: {
         id: true,
         type: true,
         createdAt: true,
+        seq: true,
       },
     });
 
@@ -319,6 +324,7 @@ async function handleInboundMessage(input: {
       messageId: message.id,
       messageType: message.type,
       occurredAt: message.createdAt,
+      seq: message.seq,
       language: detectedLanguage,
       consentCommand,
       body,
@@ -519,6 +525,8 @@ export const whatsappWebhooksRoute = new Hono()
             whatsappNumber: true,
             ordersV1Enabled: true,
             dinerAutoReplyEnabled: true,
+            businessType: true,
+            agentAutonomyOptIn: true,
             subscriptionStatus: true,
             subscription: { select: { plan: true } },
             operatorAccount: { select: { status: true } },
@@ -593,11 +601,46 @@ export const whatsappWebhooksRoute = new Hono()
             continue;
           }
 
-          await handleInboundMessage({
+          const inboundResult = await handleInboundMessage({
             integration,
             message,
             contactName: contact?.profile?.name ?? null,
           });
+
+          // Phase 4 / Task 12: dispatch the customer-facing booking agent for
+          // gate-passing SALON/HOME_SERVICES tenants. Enqueue failure must
+          // NEVER fail the webhook response — Meta retries aggressively on a
+          // non-2xx, and a lost dispatch just means one turn of the reply
+          // never fires (the customer's next message re-triggers the gate).
+          const dispatchConversationId = inboundResult?.conversationId ?? null;
+          if (
+            inboundResult &&
+            restaurant &&
+            dispatchConversationId &&
+            shouldDispatchBookingAgent({
+              businessType: restaurant.businessType,
+              agentAutonomyOptIn: restaurant.agentAutonomyOptIn,
+              botDisabled: inboundResult.botDisabled,
+              botPausedUntil: inboundResult.botPausedUntil,
+              messageType: inboundResult.messageType,
+              duplicate: inboundResult.duplicate,
+              consentCommand: inboundResult.consentCommand,
+              now: new Date(),
+            })
+          ) {
+            try {
+              await enqueueBookingAgentReply({
+                conversationId: dispatchConversationId,
+                inboundSeq: String(inboundResult.seq),
+              });
+            } catch (error) {
+              console.error("[booking-agent] dispatch enqueue failed", {
+                restaurantId: integration.restaurantId,
+                conversationId: dispatchConversationId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
         }
 
         for (const status of statuses) {

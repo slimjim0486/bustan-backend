@@ -47,6 +47,15 @@ export const TOOL_TIERS: Readonly<Record<string, AutonomyTier>> = {
   get_competitor_activity: 0,
   get_bustan_info: 0,
 
+  // Tier 0 — Phase 4 booking-loop owner tools (read-only; recon found these
+  // would fail-closed to 3 without an explicit entry).
+  get_business_snapshot: 0,
+  get_today_bookings: 0,
+  get_week_new_customers: 0,
+  get_no_show_rate: 0,
+  get_top_services: 0,
+  get_quiet_slots: 0,
+
   // Tier 1 — reversible, owner-asked, act + notify
   enhance_descriptions: 1, // drafting is tier 1; publish gate handled in tool
   suggest_dietary_tags: 1,

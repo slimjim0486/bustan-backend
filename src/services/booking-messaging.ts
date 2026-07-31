@@ -47,6 +47,7 @@ async function persistOutbound(input: {
   body: string;
   providerMessageId: string | null;
   idempotencyKey?: string;
+  answersUpToSeq?: bigint;
 }) {
   await prisma.whatsAppMessage
     .create({
@@ -60,6 +61,7 @@ async function persistOutbound(input: {
         body: input.body,
         providerMessageId: input.providerMessageId ?? undefined,
         idempotencyKey: input.idempotencyKey ?? undefined,
+        answersUpToSeq: input.answersUpToSeq ?? undefined,
       },
     })
     .catch((err: unknown) => {
@@ -133,6 +135,10 @@ export async function sendBookingText(input: {
   toPhone: string;
   body: string;
   idempotencyKey?: string;
+  /** Highest diner-message seq this reply answers. Set by the booking-agent
+   *  reply worker (Task 12) so a later staleness check can tell "already
+   *  answered" rows apart from ones still awaiting a reply. */
+  answersUpToSeq?: bigint;
 }): Promise<{ sent: boolean; reason?: string; providerMessageId?: string }> {
   const integration = await loadIntegration(input.restaurantId);
   if (!integration) return { sent: false, reason: "no_integration" };
@@ -162,6 +168,7 @@ export async function sendBookingText(input: {
       body: input.body,
       providerMessageId,
       idempotencyKey: input.idempotencyKey,
+      answersUpToSeq: input.answersUpToSeq,
     });
     return { sent: true, providerMessageId };
   } catch (err) {
