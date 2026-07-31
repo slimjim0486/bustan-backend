@@ -64,6 +64,18 @@ const usersQuerySchema = z.object({
   role: z.enum(["admin", "restaurant_owner"]).optional(),
 });
 
+const payoutStatusValues = ["PENDING", "PAID"] as const;
+
+const payoutListQuerySchema = z.object({
+  restaurantId: z.string().trim().min(1).optional(),
+  status: z.enum(payoutStatusValues).optional(),
+});
+
+export const markPaidSchema = z.object({
+  status: z.literal("PAID"),
+  reference: z.string().trim().min(2).max(200),
+});
+
 function setNoStoreHeaders(c: Context) {
   c.header("Cache-Control", "private, no-store, max-age=0");
   c.header("Pragma", "no-cache");
@@ -467,6 +479,46 @@ export const adminRoute = adminRouteBase
       });
 
       return c.json({ ticket: serializeSupportTicket(updated) });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  .get("/payouts", async (c) => {
+    try {
+      const { restaurantId, status } = payoutListQuerySchema.parse(c.req.query());
+      const payouts = await prisma.payoutRecord.findMany({
+        where: {
+          ...(restaurantId ? { restaurantId } : {}),
+          ...(status ? { status } : {}),
+        },
+        orderBy: { periodEnd: "desc" },
+        take: 200,
+      });
+      return c.json({ payouts });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
+  .patch("/payouts/:payoutId", async (c) => {
+    try {
+      const payoutId = c.req.param("payoutId");
+      const data = markPaidSchema.parse(await c.req.json());
+      const existing = await prisma.payoutRecord.findUnique({ where: { id: payoutId } });
+      if (!existing) throw new ApiError("Payout record not found", 404);
+      if (existing.status === "PAID") throw new ApiError("Payout already marked paid", 409);
+
+      const result = await prisma.payoutRecord.updateMany({
+        where: { id: payoutId, status: "PENDING" },
+        data: {
+          status: data.status,
+          reference: data.reference,
+          paidAt: new Date(),
+        },
+      });
+      if (result.count === 0) throw new ApiError("Payout already marked paid", 409);
+
+      const payout = await prisma.payoutRecord.findUnique({ where: { id: payoutId } });
+      return c.json({ payout });
     } catch (error) {
       return errorResponse(c, error);
     }
