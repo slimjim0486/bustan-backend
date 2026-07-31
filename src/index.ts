@@ -26,6 +26,7 @@ import { startCoworkerDailyBriefWorker } from "@/queue/coworker-daily-brief";
 import { startDraftShipWorker } from "@/queue/draft-ship";
 import { startBookingExpiryWorker } from "@/queue/booking-expiry";
 import { startBookingRemindersWorker } from "@/queue/booking-reminders";
+import { startBookingDaySummaryWorker } from "@/queue/booking-day-summary";
 import { startBookingAgentReplyWorker } from "@/queue/booking-agent-reply";
 import { adStudioRoute, adStudioPublicRoute } from "@/routes/ad-studio";
 import { sabtPackRoute, sabtPackAdminRoute } from "@/routes/sabt-pack";
@@ -232,6 +233,14 @@ startBookingRemindersWorker()
   })
   .catch((error) => {
     console.error("pg-boss booking-reminders worker failed to start", error);
+  });
+
+startBookingDaySummaryWorker()
+  .then(() => {
+    console.log("pg-boss booking-day-summary worker started");
+  })
+  .catch((error) => {
+    console.error("pg-boss booking-day-summary worker failed to start", error);
   });
 
 startBookingAgentReplyWorker()

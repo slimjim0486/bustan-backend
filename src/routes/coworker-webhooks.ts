@@ -13,7 +13,10 @@
 //   4. Persist inbound row
 //   5. VERIFY/START proves control of the enrolled phone and activates it
 //   6. STOP/START → pause / resume, send confirmation
-//   7. Button payload → routeButtonPayload → either canned reply or agent prompt
+//   7. Button payload:
+//        - `bkres:<bookingId>:<COMPLETED|NO_SHOW>` (booking-resolution quick
+//          reply, Phase 4 Task 13) → resolveBooking → ack text
+//        - otherwise → routeButtonPayload → either canned reply or agent prompt
 //   8. Free text → runAgentTurn → send reply text
 //
 // Status webhooks (delivered/read/failed) update CoworkerMessage.
@@ -30,6 +33,7 @@ import {
 import { normalizeE164Phone } from "@/lib/whatsapp-business";
 import { prisma } from "@/lib/prisma";
 import { routeButtonPayload, runAgentTurn } from "@/services/coworker/agent";
+import { parseResolutionPayload, resolveBooking } from "@/services/booking-resolution";
 import { sendCoworkerText } from "@/services/coworker/sender";
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -265,6 +269,17 @@ async function handleInboundMessage(input: {
 
   // Button payloads
   if (buttonPayload) {
+    const resolution = parseResolutionPayload(buttonPayload);
+    if (resolution) {
+      await handleResolutionButton({
+        coworkerOwnerId: owner.id,
+        restaurantId: owner.restaurantId,
+        bookingId: resolution.bookingId,
+        status: resolution.status,
+      });
+      return;
+    }
+
     const action = routeButtonPayload(buttonPayload);
     if (action) {
       if (action.kind === "reply") {
@@ -323,4 +338,51 @@ async function handleInboundMessage(input: {
       body: "Something hiccuped on my side. Try again in a moment, or message support if it keeps happening.",
     }).catch(() => {});
   }
+}
+
+/** Owner tapped a "Showed ✓" / "No-show" quick-reply button (sent by
+ *  queue/booking-reminders.ts' post-slot resolution prompt). resolveBooking
+ *  already scopes the update to `{ id: bookingId, restaurantId }`, so a
+ *  booking that doesn't belong to this owner's restaurant simply won't
+ *  match and comes back as `{ ok: false }` — same ack as an already-resolved
+ *  booking (double-tap, or the dashboard resolved it first). */
+async function handleResolutionButton(input: {
+  coworkerOwnerId: string;
+  restaurantId: string;
+  bookingId: string;
+  status: "COMPLETED" | "NO_SHOW";
+}) {
+  // Fetched separately (not derived from resolveBooking's result) purely for
+  // the customer's display name in the ack — scoped by the same
+  // restaurantId so an out-of-tenant bookingId can't leak a name here either.
+  const booking = await prisma.booking.findFirst({
+    where: { id: input.bookingId, restaurantId: input.restaurantId },
+    select: { customer: { select: { displayName: true } } },
+  });
+
+  const result = await resolveBooking({
+    restaurantId: input.restaurantId,
+    bookingId: input.bookingId,
+    status: input.status,
+  });
+
+  if (!result.ok) {
+    await sendCoworkerText({
+      coworkerOwnerId: input.coworkerOwnerId,
+      restaurantId: input.restaurantId,
+      body: "That booking was already resolved.",
+    });
+    return;
+  }
+
+  const customerName = booking?.customer.displayName ?? "Customer";
+  const body =
+    input.status === "COMPLETED"
+      ? `Logged: ${customerName} — showed ✓`
+      : `Logged: ${customerName} — no-show (deposit forfeited to you)`;
+  await sendCoworkerText({
+    coworkerOwnerId: input.coworkerOwnerId,
+    restaurantId: input.restaurantId,
+    body,
+  });
 }
