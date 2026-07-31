@@ -111,7 +111,7 @@ async function processReplyJob(job: ReplyWorkerJob) {
   const textToSend = result.text ?? (result.escalated ? QUEUE_HANDOFF_REPLY : null);
   if (!textToSend) return;
 
-  await sendBookingText({
+  const sendResult = await sendBookingText({
     restaurantId: conversation.restaurantId,
     conversationId,
     toPhone: conversation.customerPhone,
@@ -119,6 +119,31 @@ async function processReplyJob(job: ReplyWorkerJob) {
     idempotencyKey: `agent:${conversationId}:${inboundSeq}`,
     answersUpToSeq: jobSeq,
   });
+
+  if (sendResult.sent) return;
+
+  // Review fix (Important 2): sendBookingText's return was previously
+  // discarded — a failed send left the diner silently unanswered with no
+  // log line and no retry. Mirrors booking-expiry.ts's nudge job: a
+  // non-retryable reason (the 24h window closed since we checked, or the
+  // integration is gone/disconnected) is logged and treated as final — a
+  // pg-boss retry of the SAME job can't reopen the window or reconnect the
+  // integration, so retrying would just burn the retryLimit on a guaranteed
+  // repeat failure. Anything else (a raw WhatsApp/Meta API error — rate
+  // limit, transient network failure) is logged louder AND re-thrown so
+  // pg-boss's retryLimit: 2 gets a real second attempt.
+  const nonRetryableReasons = new Set(["window_closed", "no_integration"]);
+  if (sendResult.reason && nonRetryableReasons.has(sendResult.reason)) {
+    console.warn(
+      `[booking-agent-reply] send skipped (non-retryable) for conversation=${conversationId} inboundSeq=${inboundSeq}: ${sendResult.reason}`
+    );
+    return;
+  }
+
+  console.error(
+    `[booking-agent-reply] send failed for conversation=${conversationId} inboundSeq=${inboundSeq}: ${sendResult.reason ?? "unknown"}`
+  );
+  throw new Error(`booking-agent-reply send failed: ${sendResult.reason ?? "unknown"}`);
 }
 
 export async function startBookingAgentReplyWorker() {

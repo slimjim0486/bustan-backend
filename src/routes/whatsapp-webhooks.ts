@@ -612,11 +612,28 @@ export const whatsappWebhooksRoute = new Hono()
           // NEVER fail the webhook response — Meta retries aggressively on a
           // non-2xx, and a lost dispatch just means one turn of the reply
           // never fires (the customer's next message re-triggers the gate).
+          //
+          // Review fix (Important 1): `isOperator` (the configured business
+          // phone under orders-v1) can reach this exact call site once
+          // verified — the unverified-operator branch above always
+          // `continue`s, but a VERIFIED operator replying "ACCEPT"/"REJECT"
+          // falls through to here. shouldDispatchBookingAgent's businessType/
+          // agentAutonomyOptIn inputs don't exclude this: businessType is
+          // owner-editable via PUT /onboarding/:restaurantId/profile, so a
+          // tenant that was rebranded from RESTAURANT to SALON/HOME_SERVICES
+          // after enabling orders-v1 (or one that enables both) would have
+          // the booking agent auto-answer the OWNER's own operator phone as
+          // if it were a customer. `!isOperator` is deliberately kept OUT of
+          // the pure `shouldDispatchBookingAgent` gate — it's a fact about
+          // this specific webhook payload's sender/routing context, not a
+          // conversation/message-shape predicate — and enforced here instead,
+          // once, at the only call site that can reach a verified operator.
           const dispatchConversationId = inboundResult?.conversationId ?? null;
           if (
             inboundResult &&
             restaurant &&
             dispatchConversationId &&
+            !isOperator &&
             shouldDispatchBookingAgent({
               businessType: restaurant.businessType,
               agentAutonomyOptIn: restaurant.agentAutonomyOptIn,
