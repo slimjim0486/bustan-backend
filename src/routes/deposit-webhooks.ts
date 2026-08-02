@@ -13,12 +13,16 @@ import { verifyWebhookSyncRequest } from "@/lib/webhook-sync";
 import { confirmBookingFromDeposit } from "@/services/booking-confirm";
 
 export const depositWebhookSchema = z.object({
-  type: z.literal("checkout.session.completed"),
+  type: z.enum(["checkout.session.completed", "checkout.session.async_payment_succeeded"]),
   data: z.object({
+    eventId: z.string().min(10),
     bookingId: z.string().min(10),
     restaurantId: z.string().min(10),
     stripeSessionId: z.string().min(10),
-    paymentStatus: z.string(),
+    paymentIntentId: z.string().min(5),
+    paymentStatus: z.literal("paid"),
+    amountTotal: z.number().int().nonnegative(),
+    currency: z.string().length(3),
   }),
 });
 
@@ -42,13 +46,14 @@ depositWebhooksRoute.post("/deposit", async (c) => {
 
     const payload = depositWebhookSchema.parse(jsonPayload);
 
-    if (payload.data.paymentStatus !== "paid") {
-      return c.json({ ignored: true });
-    }
-
     const result = await confirmBookingFromDeposit({
+      eventId: payload.data.eventId,
       bookingId: payload.data.bookingId,
+      restaurantId: payload.data.restaurantId,
       stripeSessionId: payload.data.stripeSessionId,
+      paymentIntentId: payload.data.paymentIntentId,
+      amountTotal: payload.data.amountTotal,
+      currency: payload.data.currency,
     });
 
     return c.json({ outcome: result.outcome });

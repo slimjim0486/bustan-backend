@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ApiError } from "@/lib/errors";
 import { errorResponse } from "@/lib/http";
 import { prisma } from "@/lib/prisma";
+import { isPayoutPeriodClosed } from "@/lib/payout-safety";
 import { assertRateLimit } from "@/lib/public-request-guards";
 import { requireAdmin, requireAuth } from "@/middleware/auth";
 import {
@@ -503,21 +504,41 @@ export const adminRoute = adminRouteBase
     try {
       const payoutId = c.req.param("payoutId");
       const data = markPaidSchema.parse(await c.req.json());
-      const existing = await prisma.payoutRecord.findUnique({ where: { id: payoutId } });
-      if (!existing) throw new ApiError("Payout record not found", 404);
-      if (existing.status === "PAID") throw new ApiError("Payout already marked paid", 409);
+      const now = new Date();
+      const actorClerkId = c.get("admin").clerkId;
+      const payout = await prisma.$transaction(async (tx) => {
+        const existing = await tx.payoutRecord.findUnique({ where: { id: payoutId } });
+        if (!existing) throw new ApiError("Payout record not found", 404);
+        if (existing.status === "PAID") throw new ApiError("Payout already marked paid", 409);
+        if (!isPayoutPeriodClosed(existing.periodEnd, now)) {
+          throw new ApiError("Payout period is still open", 409);
+        }
 
-      const result = await prisma.payoutRecord.updateMany({
-        where: { id: payoutId, status: "PENDING" },
-        data: {
-          status: data.status,
-          reference: data.reference,
-          paidAt: new Date(),
-        },
+        const result = await tx.payoutRecord.updateMany({
+          where: { id: payoutId, status: "PENDING", periodEnd: { lte: now } },
+          data: {
+            status: data.status,
+            reference: data.reference,
+            paidAt: now,
+            paidByClerkId: actorClerkId,
+            settledDepositsAed: existing.depositsCollectedAed,
+            settledFeesAed: existing.feesKeptAed,
+            settledAmountDueAed: existing.amountDueAed,
+          },
+        });
+        if (result.count === 0) throw new ApiError("Payout already marked paid", 409);
+
+        await tx.payoutEvent.create({
+          data: {
+            payoutRecordId: payoutId,
+            type: "PAYOUT_SETTLED",
+            actorClerkId,
+            reference: data.reference,
+          },
+        });
+
+        return tx.payoutRecord.findUniqueOrThrow({ where: { id: payoutId } });
       });
-      if (result.count === 0) throw new ApiError("Payout already marked paid", 409);
-
-      const payout = await prisma.payoutRecord.findUnique({ where: { id: payoutId } });
       return c.json({ payout });
     } catch (error) {
       return errorResponse(c, error);

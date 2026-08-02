@@ -20,6 +20,8 @@
 // thrown — the webhook always acks 200 once the DB transaction succeeds.
 import { prisma } from "@/lib/prisma";
 import { applyToLedger, weeklyPeriodFor } from "@/lib/booking-ledger";
+import { assertPayoutAccrualAllowed } from "@/lib/payout-safety";
+import { validateDepositSettlement } from "@/lib/deposit-settlement";
 import {
   buildBookingTemplateParams,
   formatSlotGst,
@@ -61,8 +63,13 @@ interface ConfirmedBookingContext {
 }
 
 async function runTransition(input: {
+  eventId: string;
   bookingId: string;
+  restaurantId: string;
   stripeSessionId: string;
+  paymentIntentId: string;
+  amountTotal: number;
+  currency: string;
 }): Promise<
   | { outcome: "not_found" | "already_done" | "rejected" }
   | { outcome: "confirmed"; booking: ConfirmedBookingContext }
@@ -70,8 +77,8 @@ async function runTransition(input: {
   const now = new Date();
 
   return prisma.$transaction(async (tx) => {
-    const booking = await tx.booking.findUnique({
-      where: { id: input.bookingId },
+    const booking = await tx.booking.findFirst({
+      where: { id: input.bookingId, restaurantId: input.restaurantId },
       include: {
         customer: { select: { displayName: true, normalizedPhone: true, preferredLanguage: true } },
         service: { select: { name: true } },
@@ -80,13 +87,21 @@ async function runTransition(input: {
     });
     if (!booking) return { outcome: "not_found" as const };
 
-    if (booking.stripeSessionId && booking.stripeSessionId !== input.stripeSessionId) {
-      // Informational only — a newer checkout session may have superseded
-      // this one (see getOrCreateDepositCheckout). We still honor the paid
-      // webhook rather than block a real deposit on stale session bookkeeping.
-      console.warn(
-        `[booking-confirm] stripeSessionId mismatch for booking=${booking.id}: stored=${booking.stripeSessionId} webhook=${input.stripeSessionId}`
+    const settlementRejection = validateDepositSettlement({
+      bookingRestaurantId: booking.restaurantId,
+      relayedRestaurantId: input.restaurantId,
+      expectedStripeSessionId: booking.stripeSessionId,
+      relayedStripeSessionId: input.stripeSessionId,
+      depositAed: booking.depositAed,
+      amountTotalMinor: input.amountTotal,
+      currency: input.currency,
+      paymentIntentId: input.paymentIntentId,
+    });
+    if (settlementRejection) {
+      console.error(
+        `[booking-confirm] settlement rejected booking=${booking.id} event=${input.eventId} reason=${settlementRejection}`
       );
+      return { outcome: "rejected" as const };
     }
 
     const decision = decideConfirmTransition(booking.status);
@@ -104,7 +119,12 @@ async function runTransition(input: {
 
     const updateResult = await tx.booking.updateMany({
       where: { id: booking.id, status: { in: ["INQUIRY", "DEPOSIT_SENT", "EXPIRED"] } },
-      data: { status: "CONFIRMED", confirmedAt: now },
+      data: {
+        status: "CONFIRMED",
+        confirmedAt: now,
+        stripePaymentIntentId: input.paymentIntentId,
+        stripeConfirmedEventId: input.eventId,
+      },
     });
     if (updateResult.count === 0) {
       // Concurrent delivery already confirmed this booking — do NOT write
@@ -114,7 +134,7 @@ async function runTransition(input: {
 
     const period = weeklyPeriodFor(now);
     const delta = applyToLedger({ depositAed: booking.depositAed, feeAed: booking.feeAed });
-    await tx.payoutRecord.upsert({
+    const payout = await tx.payoutRecord.upsert({
       where: {
         restaurantId_periodStart_periodEnd: {
           restaurantId: booking.restaurantId,
@@ -134,6 +154,22 @@ async function runTransition(input: {
         depositsCollectedAed: { increment: delta.depositsDelta },
         feesKeptAed: { increment: delta.feesDelta },
         amountDueAed: { increment: delta.dueDelta },
+      },
+      select: { id: true, status: true },
+    });
+    // The upsert is inside this same transaction. If an anomalous PAID row
+    // already occupies the week, throwing here rolls back both its attempted
+    // increments and the booking confirmation instead of hiding new merchant
+    // funds inside a settlement that has already been transferred.
+    assertPayoutAccrualAllowed(payout.status);
+    await tx.payoutEvent.create({
+      data: {
+        payoutRecordId: payout.id,
+        bookingId: booking.id,
+        type: "BOOKING_CONFIRMED",
+        depositsDeltaAed: delta.depositsDelta,
+        feesDeltaAed: delta.feesDelta,
+        amountDueDeltaAed: delta.dueDelta,
       },
     });
 
@@ -220,8 +256,13 @@ async function notifyOwner(booking: ConfirmedBookingContext): Promise<void> {
 }
 
 export async function confirmBookingFromDeposit(input: {
+  eventId: string;
   bookingId: string;
+  restaurantId: string;
   stripeSessionId: string;
+  paymentIntentId: string;
+  amountTotal: number;
+  currency: string;
 }): Promise<{ outcome: "confirmed" | "already_done" | "rejected" | "not_found" }> {
   const result = await runTransition(input);
 

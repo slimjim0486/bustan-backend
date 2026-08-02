@@ -22,6 +22,7 @@ import {
   isNewCustomer,
   validateDepositConfig,
 } from "@/lib/booking-fee";
+import { bookingTransactionLockKeys } from "@/lib/booking-concurrency";
 import { formatSlotGst } from "@/lib/booking-templates";
 import { prisma } from "@/lib/prisma";
 import { scheduleDepositLifecycle } from "@/queue/booking-expiry";
@@ -334,143 +335,202 @@ async function createBooking(
 
   const slotAt = new Date(slotAtIso);
   if (Number.isNaN(slotAt.getTime())) return { content: json({ error: "invalid_slot" }) };
-
-  const { service, restaurant } = await loadServiceAndRestaurant(ctx.restaurantId, serviceId);
-  if (!service) return { content: json({ error: "unknown_service" }) };
-  if (!restaurant) return { content: json({ error: "business_not_found" }) };
-
   const now = new Date();
-  // Re-verify against a fresh availability computation rather than trusting the
-  // slot the model echoed back: minutes may have passed since check_availability
-  // and someone else may have taken it. The window starts at the slot's own GST
-  // day so alternatives land near what the customer asked for.
   const windowFrom = gstDayStart(slotAt);
   const windowTo = new Date(windowFrom.getTime() + DEFAULT_AVAILABILITY_DAYS * DAY_MS);
-  const existing = await loadHeldBookings(ctx.restaurantId, windowFrom, windowTo);
-  const slots = computeAvailableSlots({
-    hours: parseOperatingHoursJson(restaurant.operatingHours),
-    durationMinutes: service.durationMinutes,
-    granularityMinutes: granularityOf(restaurant.bookingPolicies),
-    parallelCapacity: restaurant.parallelCapacity,
-    existing,
-    from: windowFrom,
-    to: windowTo,
-    now,
-  });
+  const customerName = asString(input, "customerName");
+  const attempt = await prisma.$transaction(
+    async (tx) => {
+      // Lock both the tenant/day capacity bucket and the tenant/customer fee
+      // decision. Keys are sorted globally, preventing lock-order deadlocks.
+      for (const lockKey of bookingTransactionLockKeys({
+        restaurantId: ctx.restaurantId,
+        customerId: ctx.customerId,
+        gstDayStart: windowFrom,
+      })) {
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+      }
 
-  if (!slots.some((slot) => slot.getTime() === slotAt.getTime())) {
-    const alternatives = slots
-      .filter((slot) => slot.getTime() >= slotAt.getTime())
-      .slice(0, MAX_ALTERNATIVES);
+      const [service, restaurant, customer, conversation, priorRelationshipBookings, activeNewBooking, heldRows] =
+        await Promise.all([
+          tx.service.findFirst({
+            where: { id: serviceId, restaurantId: ctx.restaurantId, isActive: true },
+            select: { id: true, name: true, durationMinutes: true, priceAed: true },
+          }),
+          tx.restaurant.findUnique({
+            where: { id: ctx.restaurantId },
+            select: {
+              operatingHours: true,
+              bookingPolicies: true,
+              parallelCapacity: true,
+              depositAed: true,
+              newCustomerFeeAed: true,
+            },
+          }),
+          tx.customer.findFirst({
+            where: { id: ctx.customerId, restaurantId: ctx.restaurantId },
+            select: { id: true, createdAt: true, displayName: true, referralCtwaClid: true },
+          }),
+          tx.whatsAppConversation.findFirst({
+            where: { id: ctx.conversationId, restaurantId: ctx.restaurantId },
+            select: { id: true, createdAt: true },
+          }),
+          tx.booking.count({
+            where: {
+              restaurantId: ctx.restaurantId,
+              customerId: ctx.customerId,
+              status: { in: [...RELATIONSHIP_STATUSES] },
+            },
+          }),
+          tx.booking.findFirst({
+            where: {
+              restaurantId: ctx.restaurantId,
+              customerId: ctx.customerId,
+              isNewCustomer: true,
+              status: { in: ["INQUIRY", "DEPOSIT_SENT"] },
+            },
+            orderBy: { createdAt: "desc" },
+            select: { id: true },
+          }),
+          tx.booking.findMany({
+            where: {
+              restaurantId: ctx.restaurantId,
+              status: { in: [...HELD_BOOKING_STATUSES] },
+              slotAt: { gte: windowFrom, lt: windowTo },
+            },
+            select: { slotAt: true, service: { select: { durationMinutes: true } } },
+          }),
+        ]);
+
+      if (!service) return { kind: "unknown_service" as const };
+      if (!restaurant) return { kind: "business_not_found" as const };
+      if (!customer) return { kind: "customer_not_found" as const };
+
+      const newCustomer = isNewCustomer({
+        priorRelationshipBookings,
+        customerCreatedAt: customer.createdAt,
+        conversationCreatedAt: conversation?.createdAt ?? null,
+      });
+
+      // Only one unpaid fee-bearing booking may exist for a new customer. The
+      // customer lock makes this check + insert atomic. Once it expires, they
+      // can retry and remain new; once it confirms, later bookings are free.
+      if (newCustomer && activeNewBooking) {
+        return { kind: "booking_in_progress" as const, bookingId: activeNewBooking.id };
+      }
+
+      const existing: ExistingBooking[] = heldRows.map((row) => ({
+        slotAt: row.slotAt,
+        durationMinutes: row.service.durationMinutes,
+      }));
+      const slots = computeAvailableSlots({
+        hours: parseOperatingHoursJson(restaurant.operatingHours),
+        durationMinutes: service.durationMinutes,
+        granularityMinutes: granularityOf(restaurant.bookingPolicies),
+        parallelCapacity: restaurant.parallelCapacity,
+        existing,
+        from: windowFrom,
+        to: windowTo,
+        now,
+      });
+
+      if (!slots.some((slot) => slot.getTime() === slotAt.getTime())) {
+        const later = slots.filter((slot) => slot.getTime() >= slotAt.getTime()).slice(0, MAX_ALTERNATIVES);
+        return {
+          kind: "slot_taken" as const,
+          alternatives: later.length ? later : slots.slice(0, MAX_ALTERNATIVES),
+        };
+      }
+
+      const source = customer.referralCtwaClid ? ("AD" as const) : ("WHATSAPP" as const);
+      const depositAed = restaurant.depositAed ?? 0;
+      const feeAed = computeBookingFee({
+        source,
+        isNewCustomer: newCustomer,
+        tenantFeeAed: restaurant.newCustomerFeeAed,
+      });
+      const depositCheck = validateDepositConfig({ depositAed, feeAed });
+      if (!depositCheck.ok) {
+        return {
+          kind: "deposit_misconfigured" as const,
+          reason: depositCheck.reason,
+          serviceName: service.name,
+          depositAed,
+          feeAed,
+        };
+      }
+
+      const booking = await tx.booking.create({
+        data: {
+          restaurantId: ctx.restaurantId,
+          customerId: ctx.customerId,
+          serviceId: service.id,
+          slotAt,
+          status: "DEPOSIT_SENT",
+          isNewCustomer: newCustomer,
+          feeAed,
+          depositAed,
+          conversationId: conversation?.id ?? null,
+          source,
+        },
+        select: { id: true },
+      });
+
+      if (customerName && isPhoneLikeName(customer.displayName)) {
+        await tx.customer.update({
+          where: { id: customer.id },
+          data: { displayName: customerName.slice(0, 160) },
+        });
+      }
+
+      return { kind: "created" as const, bookingId: booking.id, depositAed };
+    },
+    { maxWait: 5_000, timeout: 15_000 }
+  );
+
+  if (attempt.kind === "unknown_service") return { content: json({ error: "unknown_service" }) };
+  if (attempt.kind === "business_not_found") return { content: json({ error: "business_not_found" }) };
+  if (attempt.kind === "customer_not_found") return { content: json({ error: "customer_not_found" }) };
+  if (attempt.kind === "booking_in_progress") {
     return {
       content: json({
-        error: "slot_taken",
-        alternatives: (alternatives.length ? alternatives : slots.slice(0, MAX_ALTERNATIVES)).map(
-          (slot) => ({ slotAtIso: slot.toISOString(), label: formatSlotGst(slot) })
-        ),
+        error: "booking_in_progress",
+        bookingId: attempt.bookingId,
+        payUrl: payUrlFor(attempt.bookingId),
+        note: "This customer already has a deposit awaiting payment. Reuse that payment link before creating another booking.",
       }),
     };
   }
-
-  const [customer, conversation, priorRelationshipBookings] = await Promise.all([
-    prisma.customer.findFirst({
-      where: { id: ctx.customerId, restaurantId: ctx.restaurantId },
-      select: { id: true, createdAt: true, displayName: true, referralCtwaClid: true },
-    }),
-    prisma.whatsAppConversation.findFirst({
-      where: { id: ctx.conversationId, restaurantId: ctx.restaurantId },
-      select: { id: true, createdAt: true },
-    }),
-    // MUST filter on RELATIONSHIP_STATUSES: a prior EXPIRED / CANCELLED /
-    // INQUIRY booking is not a relationship, so it must NOT disqualify this
-    // customer from counting as new (Task 3 contract).
-    prisma.booking.count({
-      where: {
-        restaurantId: ctx.restaurantId,
-        customerId: ctx.customerId,
-        status: { in: [...RELATIONSHIP_STATUSES] },
-      },
-    }),
-  ]);
-
-  if (!customer) return { content: json({ error: "customer_not_found" }) };
-
-  const newCustomer = isNewCustomer({
-    priorRelationshipBookings,
-    customerCreatedAt: customer.createdAt,
-    conversationCreatedAt: conversation?.createdAt ?? null,
-  });
-
-  // CTWA attribution lives on Customer (promoted from the inbound webhook's
-  // referral payload); the conversation row carries no referral columns.
-  const source = customer.referralCtwaClid ? "AD" : "WHATSAPP";
-  const depositAed = restaurant.depositAed ?? 0;
-  const feeAed = computeBookingFee({
-    source,
-    isNewCustomer: newCustomer,
-    tenantFeeAed: restaurant.newCustomerFeeAed,
-  });
-
-  // Review fix (Important 2): a tenant with depositAed unset (NULL) passed
-  // the DB CHECK (which only fires when BOTH columns are non-null) but the
-  // `?? 0` fallback above then produced a booking with depositAed:0 and a
-  // Stripe Checkout session with unit_amount 0 — Stripe rejects that outright,
-  // so the customer got a dead pay link with no way forward. Refuse to create
-  // the booking at all in that case (or if a fee is configured above the
-  // deposit) and escalate to the owner instead, using the exact same
-  // pause+notify path as the escalate_to_owner tool so the owner sees it in
-  // their inbox immediately rather than depending on the model reliably
-  // calling escalate_to_owner itself off the back of an error string.
-  const depositCheck = validateDepositConfig({ depositAed, feeAed });
-  if (!depositCheck.ok) {
+  if (attempt.kind === "slot_taken") {
+    return {
+      content: json({
+        error: "slot_taken",
+        alternatives: attempt.alternatives.map((slot) => ({
+          slotAtIso: slot.toISOString(),
+          label: formatSlotGst(slot),
+        })),
+      }),
+    };
+  }
+  if (attempt.kind === "deposit_misconfigured") {
     console.error(
-      `[booking-agent] refusing create_booking: deposit misconfigured for restaurant=${ctx.restaurantId} service=${service.id} reason=${depositCheck.reason} depositAed=${depositAed} feeAed=${feeAed}`
+      `[booking-agent] refusing create_booking: deposit misconfigured for restaurant=${ctx.restaurantId} service=${serviceId} reason=${attempt.reason} depositAed=${attempt.depositAed} feeAed=${attempt.feeAed}`
     );
     await pauseConversationForOwner({
       restaurantId: ctx.restaurantId,
       conversationId: ctx.conversationId,
-      reason: `Customer wants to book ${service.name} but online deposits aren't fully set up (${depositCheck.reason}) — needs a manual booking.`,
+      reason: `Customer wants to book ${attempt.serviceName} but online deposits aren't fully set up (${attempt.reason}) — needs a manual booking.`,
       pauseMs: ESCALATION_PAUSE_MS,
       notifyOwner: true,
     });
     return {
       content: json({
-        error: depositCheck.reason,
+        error: attempt.reason,
         escalated: true,
         note: "Online booking isn't fully set up for this business yet, so you cannot take a deposit right now. Apologize to the customer, tell them someone from the team will confirm their booking shortly, and stop replying.",
       }),
       escalated: true,
     };
-  }
-
-  const booking = await prisma.booking.create({
-    data: {
-      restaurantId: ctx.restaurantId,
-      customerId: ctx.customerId,
-      serviceId: service.id,
-      slotAt,
-      status: "DEPOSIT_SENT",
-      // Frozen at creation: the fee is decided once, here, and never
-      // recomputed when the booking later confirms or resolves.
-      isNewCustomer: newCustomer,
-      feeAed,
-      depositAed,
-      conversationId: conversation?.id ?? null,
-      source,
-    },
-    select: { id: true },
-  });
-
-  const customerName = asString(input, "customerName");
-  if (customerName && isPhoneLikeName(customer.displayName)) {
-    await prisma.customer
-      .update({
-        where: { id: customer.id },
-        data: { displayName: customerName.slice(0, 160) },
-      })
-      .catch((error) => {
-        console.error("[booking-agent] displayName update failed", error);
-      });
   }
 
   // Schedules the +5h nudge and the +6h expiry. Called exactly once per
@@ -484,20 +544,20 @@ async function createBooking(
   // with a pay link but no expiry job is strictly better than a held slot with
   // no link — it is recoverable by hand, and the customer can still pay.
   try {
-    await scheduleDepositLifecycle(booking.id, new Date());
+    await scheduleDepositLifecycle(attempt.bookingId, new Date());
   } catch (error) {
     console.error(
-      `[booking-agent] scheduleDepositLifecycle failed for booking=${booking.id} — booking is live with NO expiry/nudge job, needs manual sweep`,
+      `[booking-agent] scheduleDepositLifecycle failed for booking=${attempt.bookingId} — booking is live with NO expiry/nudge job, needs manual sweep`,
       error
     );
   }
 
   return {
     content: json({
-      bookingId: booking.id,
-      payUrl: payUrlFor(booking.id),
+      bookingId: attempt.bookingId,
+      payUrl: payUrlFor(attempt.bookingId),
       slotLabel: formatSlotGst(slotAt),
-      depositAed,
+      depositAed: attempt.depositAed,
     }),
   };
 }

@@ -10,6 +10,8 @@ import {
 } from "@/lib/onboarding";
 import { prisma } from "@/lib/prisma";
 import { normalizeUaePhone } from "@/lib/uae-phone";
+import { agentReadinessFailures } from "@/lib/onboarding-readiness";
+import { canonicalizeCustomerImportRows } from "@/lib/customer-import";
 import { requireAuth } from "@/middleware/auth";
 
 const businessProfileSchema = z.object({
@@ -34,6 +36,10 @@ const progressSchema = z.object({
 
 const agentSchema = z.object({
   goLive: z.boolean(),
+});
+
+const sandboxSchema = z.object({
+  message: z.string().trim().min(1).max(500),
 });
 
 const customerImportSchema = z.object({
@@ -65,7 +71,7 @@ async function getOwnedBusiness(restaurantId: string, clerkId: string) {
       },
       _count: {
         select: {
-          services: true,
+          services: { where: { isActive: true } },
           customers: true,
           bookings: true,
         },
@@ -89,6 +95,7 @@ function serializeOnboarding(restaurant: Awaited<ReturnType<typeof getOwnedBusin
       newCustomerFeeAed: restaurant.newCustomerFeeAed,
       depositAed: restaurant.depositAed,
       agentAutonomyOptIn: restaurant.agentAutonomyOptIn,
+      onboardingSandboxTestCount: restaurant.onboardingSandboxTestCount,
     },
     progress: buildOnboardingProgress({
       currentStep: restaurant.onboardingStep,
@@ -218,11 +225,59 @@ export const onboardingRoute = onboardingRouteBase
       return errorResponse(c, error);
     }
   })
+  .post("/:restaurantId/agent/sandbox", async (c) => {
+    try {
+      const restaurantId = c.req.param("restaurantId");
+      const current = await getOwnedBusiness(restaurantId, c.get("auth").clerkId);
+      const { message } = sandboxSchema.parse(await c.req.json());
+      const services = await prisma.service.findMany({
+        where: { restaurantId, isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        take: 3,
+        select: { name: true, priceAed: true, durationMinutes: true },
+      });
+      if (!services.length) throw new ApiError("Add an active service before testing the agent", 409);
+
+      const normalized = message.toLowerCase();
+      const policies = current.bookingPolicies && typeof current.bookingPolicies === "object" && !Array.isArray(current.bookingPolicies)
+        ? current.bookingPolicies as { noShowPolicy?: unknown }
+        : null;
+      const reply = normalized.includes("cancel") || normalized.includes("deposit") || normalized.includes("policy")
+        ? typeof policies?.noShowPolicy === "string" && policies.noShowPolicy.trim()
+          ? `The business policy is: ${policies.noShowPolicy.trim()}`
+          : "The cancellation policy has not been configured yet."
+        : normalized.includes("price") || normalized.includes("much")
+          ? services.map((service) => `${service.name}: AED ${service.priceAed}, ${service.durationMinutes} min`).join(" · ")
+          : `I found ${services.length} configured service${services.length === 1 ? "" : "s"}. I would check the live availability grid before offering a time.`;
+
+      const updated = await prisma.restaurant.update({
+        where: { id: restaurantId },
+        data: { onboardingSandboxTestCount: { increment: 1 } },
+        select: { onboardingSandboxTestCount: true },
+      });
+      return c.json({ reply, sandboxTestCount: updated.onboardingSandboxTestCount });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  })
   .put("/:restaurantId/agent", async (c) => {
     try {
       const restaurantId = c.req.param("restaurantId");
-      await getOwnedBusiness(restaurantId, c.get("auth").clerkId);
+      const current = await getOwnedBusiness(restaurantId, c.get("auth").clerkId);
       const input = agentSchema.parse(await c.req.json());
+      if (input.goLive) {
+        const failures = agentReadinessFailures({
+          businessType: current.businessType,
+          whatsappStatus: current.whatsappIntegration?.status ?? null,
+          serviceCount: current._count.services,
+          operatingHours: current.operatingHours,
+          bookingPolicies: current.bookingPolicies,
+          feeAed: current.newCustomerFeeAed,
+          depositAed: current.depositAed,
+          sandboxTestCount: current.onboardingSandboxTestCount,
+        });
+        if (failures.length) throw new ApiError("Booking agent is not ready to go live", 409, { failures });
+      }
       const restaurant = await prisma.restaurant.update({
         where: { id: restaurantId },
         data: {
@@ -242,20 +297,24 @@ export const onboardingRoute = onboardingRouteBase
       const restaurantId = c.req.param("restaurantId");
       await getOwnedBusiness(restaurantId, c.get("auth").clerkId);
       const input = customerImportSchema.parse(await c.req.json());
-      const rows = input.customers.map((customer, index) => ({
+      const normalizedRows = input.customers.map((customer, index) => ({
         ...customer,
         index,
         normalizedPhone: normalizeUaePhone(customer.phone),
       }));
-      const invalid = rows.filter((row) => !row.normalizedPhone);
+      const invalid = normalizedRows.filter((row) => !row.normalizedPhone);
       if (invalid.length) {
         throw new ApiError(
           `Invalid UAE phone number on row ${invalid[0].index + 1}`,
           400
         );
       }
+      const rows = canonicalizeCustomerImportRows(
+        normalizedRows.map((row) => ({ ...row, normalizedPhone: row.normalizedPhone! }))
+      );
 
       let eligible = 0;
+      let protectedOptOuts = 0;
       await prisma.$transaction(async (tx) => {
         for (const row of rows) {
           const normalizedPhone = row.normalizedPhone!;
@@ -276,9 +335,9 @@ export const onboardingRoute = onboardingRouteBase
           const latest = existing?.consents[0];
           const protectedOptOut =
             row.consent &&
-            latest?.status === "opt_out" &&
-            ["whatsapp", "whatsapp_keyword"].includes(latest.source);
+            latest?.status === "opt_out";
           const marketingOptIn = row.consent && !protectedOptOut;
+          if (protectedOptOut) protectedOptOuts += 1;
           if (marketingOptIn) eligible += 1;
           const now = new Date();
 
@@ -313,12 +372,13 @@ export const onboardingRoute = onboardingRouteBase
             },
           });
 
-          if (!protectedOptOut) {
+          const targetConsentStatus = marketingOptIn ? "opt_in" : "opt_out";
+          if (!protectedOptOut && latest?.status !== targetConsentStatus) {
             await tx.customerConsent.create({
               data: {
                 restaurantId,
                 customerId: customer.id,
-                status: marketingOptIn ? "opt_in" : "opt_out",
+                status: targetConsentStatus,
                 source: "onboarding_csv",
               },
             });
@@ -329,7 +389,7 @@ export const onboardingRoute = onboardingRouteBase
       return c.json({
         imported: rows.length,
         marketingEligible: eligible,
-        protectedOptOuts: rows.filter((row) => row.consent).length - eligible,
+        protectedOptOuts,
       });
     } catch (error) {
       return errorResponse(c, error);

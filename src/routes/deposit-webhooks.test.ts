@@ -11,10 +11,14 @@ test("depositWebhookSchema accepts a valid checkout.session.completed payload", 
   const parsed = depositWebhookSchema.parse({
     type: "checkout.session.completed",
     data: {
+      eventId: "evt_test_1234567890",
       bookingId: "booking_cuid_1234",
       restaurantId: "restaurant_cuid_1234",
       stripeSessionId: "cs_test_1234567890",
+      paymentIntentId: "pi_test_1234567890",
       paymentStatus: "paid",
+      amountTotal: 5000,
+      currency: "aed",
     },
   });
   assert.equal(parsed.type, "checkout.session.completed");
@@ -28,9 +32,13 @@ test("depositWebhookSchema rejects a missing bookingId", async () => {
     depositWebhookSchema.parse({
       type: "checkout.session.completed",
       data: {
+        eventId: "evt_test_1234567890",
         restaurantId: "restaurant_cuid_1234",
         stripeSessionId: "cs_test_1234567890",
+        paymentIntentId: "pi_test_1234567890",
         paymentStatus: "paid",
+        amountTotal: 5000,
+        currency: "aed",
       },
     })
   );
@@ -45,7 +53,10 @@ test("depositWebhookSchema rejects an unknown event type", async () => {
         bookingId: "booking_cuid_1234",
         restaurantId: "restaurant_cuid_1234",
         stripeSessionId: "cs_test_1234567890",
+        paymentIntentId: "pi_test_1234567890",
         paymentStatus: "unpaid",
+        amountTotal: 5000,
+        currency: "aed",
       },
     })
   );

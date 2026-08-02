@@ -186,6 +186,13 @@ enum PayoutStatus {
   PAID
 }
 
+enum PayoutEventType {
+  BOOKING_CONFIRMED
+  PAYOUT_SETTLED
+  REFUND
+  ADJUSTMENT
+}
+
 enum OrderFulfillmentMethod {
   delivery
   pickup
@@ -316,52 +323,53 @@ model User {
 }
 
 model Restaurant {
-  id                     String             @id @default(cuid())
-  slug                   String             @unique
-  name                   String
-  description            String?
-  nameAr                 String?            @map("name_ar")
-  descriptionAr          String?            @map("description_ar")
-  arabicEnabled          Boolean            @default(false) @map("arabic_enabled")
-  cuisineType            String?            @map("cuisine_type")
-  themeKey               String?            @map("theme_key")
-  location               String?
-  address                String?
-  phone                  String?
-  website                String?
-  whatsappNumber         String?            @map("whatsapp_number")
-  whatsappPrefill        String?            @map("whatsapp_prefill")
-  deliverooUrl           String?            @map("deliveroo_url")
-  talabatUrl             String?            @map("talabat_url")
-  uberEatsUrl            String?            @map("uber_eats_url")
-  operatingHours         Json?              @map("operating_hours")
-  logoUrl                String?            @map("logo_url")
-  coverImageUrl          String?            @map("cover_image_url")
-  isPublished            Boolean            @default(false) @map("is_published")
-  isDemo                 Boolean            @default(false) @map("is_demo")
-  subscriptionStatus     SubscriptionStatus @default(trial) @map("subscription_status")
-  trialEndsAt            DateTime?          @map("trial_ends_at")
-  sabtPackEnabled        Boolean            @default(true) @map("sabt_pack_enabled")
-  eventCalendarEnabled   Boolean            @default(true) @map("event_calendar_enabled")
-  ordersV1Enabled        Boolean            @default(false) @map("orders_v1_enabled")
-  sousChefRoutingEnabled Boolean            @default(false) @map("sous_chef_routing_enabled")
-  dinerAutoReplyEnabled  Boolean            @default(false) @map("diner_auto_reply_enabled")
-  businessType           BusinessType       @default(RESTAURANT) @map("business_type")
-  newCustomerFeeAed      Int?               @map("new_customer_fee_aed")
-  depositAed             Int?               @map("deposit_aed")
-  bookingPolicies        Json?              @map("booking_policies")
-  parallelCapacity       Int                @default(2) @map("parallel_capacity")
-  onboardingStep         Int                @default(1) @map("onboarding_step")
-  onboardingCompleted    Json?              @map("onboarding_completed")
+  id                         String             @id @default(cuid())
+  slug                       String             @unique
+  name                       String
+  description                String?
+  nameAr                     String?            @map("name_ar")
+  descriptionAr              String?            @map("description_ar")
+  arabicEnabled              Boolean            @default(false) @map("arabic_enabled")
+  cuisineType                String?            @map("cuisine_type")
+  themeKey                   String?            @map("theme_key")
+  location                   String?
+  address                    String?
+  phone                      String?
+  website                    String?
+  whatsappNumber             String?            @map("whatsapp_number")
+  whatsappPrefill            String?            @map("whatsapp_prefill")
+  deliverooUrl               String?            @map("deliveroo_url")
+  talabatUrl                 String?            @map("talabat_url")
+  uberEatsUrl                String?            @map("uber_eats_url")
+  operatingHours             Json?              @map("operating_hours")
+  logoUrl                    String?            @map("logo_url")
+  coverImageUrl              String?            @map("cover_image_url")
+  isPublished                Boolean            @default(false) @map("is_published")
+  isDemo                     Boolean            @default(false) @map("is_demo")
+  subscriptionStatus         SubscriptionStatus @default(trial) @map("subscription_status")
+  trialEndsAt                DateTime?          @map("trial_ends_at")
+  sabtPackEnabled            Boolean            @default(true) @map("sabt_pack_enabled")
+  eventCalendarEnabled       Boolean            @default(true) @map("event_calendar_enabled")
+  ordersV1Enabled            Boolean            @default(false) @map("orders_v1_enabled")
+  sousChefRoutingEnabled     Boolean            @default(false) @map("sous_chef_routing_enabled")
+  dinerAutoReplyEnabled      Boolean            @default(false) @map("diner_auto_reply_enabled")
+  businessType               BusinessType       @default(RESTAURANT) @map("business_type")
+  newCustomerFeeAed          Int?               @map("new_customer_fee_aed")
+  depositAed                 Int?               @map("deposit_aed")
+  bookingPolicies            Json?              @map("booking_policies")
+  parallelCapacity           Int                @default(2) @map("parallel_capacity")
+  onboardingStep             Int                @default(1) @map("onboarding_step")
+  onboardingCompleted        Json?              @map("onboarding_completed")
+  onboardingSandboxTestCount Int                @default(0) @map("onboarding_sandbox_test_count")
   // B1b real autonomy. Owner master opt-in (default OFF): the plan entitlement
   // is the ceiling, this is the actual switch. autonomyResumedAt zeroes the
   // velocity-breaker rolling window when the owner taps Resume.
-  agentAutonomyOptIn     Boolean            @default(false) @map("agent_autonomy_opt_in")
-  autonomyResumedAt      DateTime?          @map("autonomy_resumed_at")
-  ownerId                String             @map("owner_user_id")
-  operatorAccountId      String?            @map("operator_account_id")
-  createdAt              DateTime           @default(now()) @map("created_at")
-  updatedAt              DateTime           @updatedAt @map("updated_at")
+  agentAutonomyOptIn         Boolean            @default(false) @map("agent_autonomy_opt_in")
+  autonomyResumedAt          DateTime?          @map("autonomy_resumed_at")
+  ownerId                    String             @map("owner_user_id")
+  operatorAccountId          String?            @map("operator_account_id")
+  createdAt                  DateTime           @default(now()) @map("created_at")
+  updatedAt                  DateTime           @updatedAt @map("updated_at")
 
   owner                     User                         @relation(fields: [ownerId], references: [id])
   operatorAccount           OperatorAccount?             @relation(fields: [operatorAccountId], references: [id], onDelete: SetNull)
@@ -897,28 +905,31 @@ model Service {
 }
 
 model Booking {
-  id              String        @id @default(cuid())
-  restaurantId    String        @map("restaurant_id")
-  customerId      String        @map("customer_id")
-  serviceId       String        @map("service_id")
-  slotAt          DateTime      @map("slot_at")
-  status          BookingStatus @default(INQUIRY)
-  isNewCustomer   Boolean       @map("is_new_customer")
-  feeAed          Int           @default(0) @map("fee_aed")
-  depositAed      Int           @default(0) @map("deposit_aed")
-  stripeSessionId String?       @unique @map("stripe_session_id")
-  conversationId  String?       @map("conversation_id")
-  source          BookingSource @default(WHATSAPP)
-  notes           String?
-  createdAt       DateTime      @default(now()) @map("created_at")
-  confirmedAt     DateTime?     @map("confirmed_at")
-  resolvedAt      DateTime?     @map("resolved_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
+  id                     String        @id @default(cuid())
+  restaurantId           String        @map("restaurant_id")
+  customerId             String        @map("customer_id")
+  serviceId              String        @map("service_id")
+  slotAt                 DateTime      @map("slot_at")
+  status                 BookingStatus @default(INQUIRY)
+  isNewCustomer          Boolean       @map("is_new_customer")
+  feeAed                 Int           @default(0) @map("fee_aed")
+  depositAed             Int           @default(0) @map("deposit_aed")
+  stripeSessionId        String?       @unique @map("stripe_session_id")
+  stripePaymentIntentId  String?       @unique @map("stripe_payment_intent_id")
+  stripeConfirmedEventId String?       @unique @map("stripe_confirmed_event_id")
+  conversationId         String?       @map("conversation_id")
+  source                 BookingSource @default(WHATSAPP)
+  notes                  String?
+  createdAt              DateTime      @default(now()) @map("created_at")
+  confirmedAt            DateTime?     @map("confirmed_at")
+  resolvedAt             DateTime?     @map("resolved_at")
+  updatedAt              DateTime      @updatedAt @map("updated_at")
 
   restaurant   Restaurant            @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   customer     Customer              @relation(fields: [customerId], references: [id], onDelete: Restrict)
   service      Service               @relation(fields: [serviceId], references: [id], onDelete: Restrict)
   conversation WhatsAppConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  payoutEvents PayoutEvent[]
 
   @@index([restaurantId, slotAt])
   @@index([restaurantId, status, slotAt])
@@ -938,15 +949,41 @@ model PayoutRecord {
   amountDueAed         Int          @default(0) @map("amount_due_aed")
   status               PayoutStatus @default(PENDING)
   paidAt               DateTime?    @map("paid_at")
+  paidByClerkId        String?      @map("paid_by_clerk_id")
   reference            String?
+  settledDepositsAed   Int?         @map("settled_deposits_aed")
+  settledFeesAed       Int?         @map("settled_fees_aed")
+  settledAmountDueAed  Int?         @map("settled_amount_due_aed")
   createdAt            DateTime     @default(now()) @map("created_at")
   updatedAt            DateTime     @updatedAt @map("updated_at")
 
-  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  events     PayoutEvent[]
 
   @@unique([restaurantId, periodStart, periodEnd])
   @@index([restaurantId, status, periodEnd])
   @@map("payout_records")
+}
+
+model PayoutEvent {
+  id                String          @id @default(cuid())
+  payoutRecordId    String          @map("payout_record_id")
+  bookingId         String?         @map("booking_id")
+  type              PayoutEventType
+  depositsDeltaAed  Int             @default(0) @map("deposits_delta_aed")
+  feesDeltaAed      Int             @default(0) @map("fees_delta_aed")
+  amountDueDeltaAed Int             @default(0) @map("amount_due_delta_aed")
+  actorClerkId      String?         @map("actor_clerk_id")
+  reference         String?
+  createdAt         DateTime        @default(now()) @map("created_at")
+
+  payoutRecord PayoutRecord @relation(fields: [payoutRecordId], references: [id], onDelete: Cascade)
+  booking      Booking?     @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@unique([bookingId, type])
+  @@index([payoutRecordId, createdAt])
+  @@index([type, createdAt])
+  @@map("payout_events")
 }
 
 model OrderIntent {
