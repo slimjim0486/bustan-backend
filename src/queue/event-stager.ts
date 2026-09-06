@@ -1,8 +1,8 @@
-// Event-driven Ad Studio auto-stager — daily 08:00-GST cron.
+// Event-driven Ad Studio auto-stager (on-demand only).
 //
-// Mirrors backend/src/queue/sabt-pack.ts in shape: a fanout job (cron-scheduled)
-// that enumerates Pro/Portfolio restaurants with the event calendar enabled and
-// enqueues a per-restaurant "stage moments" job. The per-restaurant worker:
+// The daily 08:00-GST cron fanout was removed on 2026-09-06. Per-restaurant
+// runs are triggered via the admin endpoint (runEventStagerForRestaurantNow /
+// enqueueEventStagerForRestaurant). The per-restaurant worker:
 //   1. Resolves the restaurant's country.
 //   2. Plans which calendar moments fall inside their prep lead window.
 //   3. For each moment, upserts a draft AdProject (idempotent via the unique
@@ -38,26 +38,11 @@ import {
   type PlannedStaging,
 } from "@/services/ad-studio/event-stager";
 
-export const EVENT_STAGER_FANOUT_JOB = "event-stager-fanout";
 export const EVENT_STAGER_RUN_JOB = "event-stager-run";
 
 const RETRY_LIMIT = 1;
-const FANOUT_RESTAURANT_CAP = 1000;
 
-let fanoutQueueReady: Promise<void> | null = null;
 let runQueueReady: Promise<void> | null = null;
-
-async function ensureFanoutQueue() {
-  if (!fanoutQueueReady) {
-    fanoutQueueReady = getBoss()
-      .then((queue) => queue.createQueue(EVENT_STAGER_FANOUT_JOB))
-      .catch((error) => {
-        fanoutQueueReady = null;
-        throw error;
-      });
-  }
-  await fanoutQueueReady;
-}
 
 async function ensureRunQueue() {
   if (!runQueueReady) {
@@ -78,7 +63,6 @@ export interface EventStagerRunJobData {
 type RunWorkerJob = PgBoss.JobWithMetadata<EventStagerRunJobData>;
 
 export async function startEventStagerWorker() {
-  await ensureFanoutQueue();
   await ensureRunQueue();
   const queue = await getBoss();
 
@@ -99,60 +83,6 @@ export async function startEventStagerWorker() {
       }
     }
   );
-
-  // Daily at 04:00 UTC = 08:00 GST. UAE is UTC+4 year-round, no DST.
-  await queue.schedule(EVENT_STAGER_FANOUT_JOB, "0 4 * * *", undefined, {
-    tz: "UTC",
-  });
-  await queue.work(EVENT_STAGER_FANOUT_JOB, async () => {
-    await fanOutEventStagerJobs();
-  });
-}
-
-/** Enumerate eligible restaurants and enqueue one per-restaurant run job each.
- *  Mirrors the entitlement filter in sabt-pack.ts so we only stage drafts for
- *  paid plans — auto-staging a draft for a trial-expired restaurant would
- *  fill their inbox with reminders they can't act on. */
-async function fanOutEventStagerJobs() {
-  const candidates = await prisma.restaurant.findMany({
-    where: {
-      eventCalendarEnabled: true,
-      subscriptionStatus: { in: ["active", "trial"] },
-      // Subscription branch: paid roles (matches the entitlement gate
-      // checked again per-restaurant inside processRunJob).
-      OR: [
-        {
-          subscription: {
-            is: {
-              plan: { in: ["pro", "fulltime", "portfolio"] },
-              status: { in: ["active", "trial"] },
-            },
-          },
-        },
-        {
-          operatorAccount: {
-            is: { status: { in: ["active", "trial"] } },
-          },
-        },
-      ],
-    },
-    select: { id: true },
-    take: FANOUT_RESTAURANT_CAP,
-  });
-
-  await ensureRunQueue();
-  const queue = await getBoss();
-
-  let enqueued = 0;
-  for (const r of candidates) {
-    await queue.send(EVENT_STAGER_RUN_JOB, { restaurantId: r.id }, { retryLimit: RETRY_LIMIT });
-    enqueued++;
-  }
-
-  console.log(`[event-stager] fanout enqueued=${enqueued}`);
-  if (candidates.length === FANOUT_RESTAURANT_CAP) {
-    console.warn(`[event-stager] fanout hit cap of ${FANOUT_RESTAURANT_CAP}`);
-  }
 }
 
 interface StagedDraft {

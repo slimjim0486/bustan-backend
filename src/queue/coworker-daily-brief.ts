@@ -1,8 +1,7 @@
-// Daily Brief fan-out + per-owner send.
+// Daily Brief per-owner send (on-demand only).
 //
-// Schedule: 04:00 UTC = 08:00 GST. This deliberately runs ~1h AFTER the
-// existing owner-whisper job (03:00 UTC) so the WhisperSnapshot is already
-// cached in OwnerWhisper.metricsJson by the time we render the WA template.
+// The 08:00 GST cron fanout was removed on 2026-09-06; briefs are now sent
+// only via the admin "send now" trigger (enqueueBriefSendNow).
 //
 // Per-owner job is idempotent on `daily-brief:{restaurantId}:{forDate}`.
 
@@ -16,26 +15,11 @@ import {
 } from "@/services/coworker/daily-brief";
 import { sendCoworkerTemplate } from "@/services/coworker/sender";
 
-export const COWORKER_DAILY_BRIEF_FANOUT_JOB = "coworker-daily-brief-fanout";
 export const COWORKER_DAILY_BRIEF_SEND_JOB = "coworker-daily-brief-send";
 
 const RETRY_LIMIT = 1;
-const FANOUT_CAP = 1000;
 
-let fanoutQueueReady: Promise<void> | null = null;
 let sendQueueReady: Promise<void> | null = null;
-
-async function ensureFanoutQueue() {
-  if (!fanoutQueueReady) {
-    fanoutQueueReady = getBoss()
-      .then((q) => q.createQueue(COWORKER_DAILY_BRIEF_FANOUT_JOB))
-      .catch((e) => {
-        fanoutQueueReady = null;
-        throw e;
-      });
-  }
-  await fanoutQueueReady;
-}
 
 async function ensureSendQueue() {
   if (!sendQueueReady) {
@@ -69,7 +53,6 @@ export async function startCoworkerDailyBriefWorker() {
     return;
   }
 
-  await ensureFanoutQueue();
   await ensureSendQueue();
   const queue = await getBoss();
 
@@ -89,41 +72,6 @@ export async function startCoworkerDailyBriefWorker() {
       }
     }
   );
-
-  // 04:00 UTC = 08:00 GST. After owner-whisper (03:00 UTC) so the snapshot
-  // is fresh.
-  await queue.schedule(COWORKER_DAILY_BRIEF_FANOUT_JOB, "0 4 * * *", undefined, {
-    tz: "UTC",
-  });
-  await queue.work(COWORKER_DAILY_BRIEF_FANOUT_JOB, async () => {
-    await fanOut();
-  });
-}
-
-async function fanOut() {
-  const forDate = uaeYesterdayIso();
-  const owners = await prisma.coworkerOwner.findMany({
-    where: { status: "active" },
-    select: { id: true, restaurantId: true },
-    take: FANOUT_CAP,
-  });
-
-  let enqueued = 0;
-  await ensureSendQueue();
-  const queue = await getBoss();
-  for (const owner of owners) {
-    await queue.send(
-      COWORKER_DAILY_BRIEF_SEND_JOB,
-      { coworkerOwnerId: owner.id, forDate } satisfies SendJobData,
-      { retryLimit: RETRY_LIMIT }
-    );
-    enqueued++;
-  }
-
-  console.log(`[coworker-daily-brief] forDate=${forDate} enqueued=${enqueued}`);
-  if (owners.length === FANOUT_CAP) {
-    console.warn(`[coworker-daily-brief] fan-out hit cap of ${FANOUT_CAP}`);
-  }
 }
 
 async function processSendJob(data: SendJobData) {

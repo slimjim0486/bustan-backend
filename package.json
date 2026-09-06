@@ -14,7 +14,6 @@
     "worker": "tsx src/queue/worker.ts",
     "smoke:meta-callbacks": "tsx scripts/smoke-test-meta-callbacks.ts",
     "admin:promote": "tsx scripts/promote-admin.ts",
-    "sabt-pack:trigger": "tsx scripts/sabt-pack-trigger.ts",
     "market-pulse:trigger": "tsx scripts/competitor-intel-trigger.ts",
     "orders-v1:enable": "tsx scripts/enable-orders-v1.ts",
     "demo:sales:seed": "tsx src/scripts/seed-sales-demo.ts",

@@ -1,6 +1,7 @@
-// Daily Owner's Whisper job for Sous Chef.
-// Generates a 5-line morning briefing for every active paid-role restaurant.
-// Cron: 03:00 UTC = 07:00 GST. Mirrors ad-studio-jobs.ts pattern.
+// Owner's Whisper job for Sous Chef (on-demand only).
+// Generates a 5-line briefing for one restaurant when enqueued explicitly
+// (enqueueWhisperForRestaurant). The daily 07:00 GST cron fanout was removed
+// on 2026-09-06.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { Prisma } from "@prisma/client";
@@ -15,29 +16,13 @@ import {
 import { prisma } from "@/lib/prisma";
 import { STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
 import { getBoss } from "@/queue/boss";
-import { WEEKLY_ELIGIBLE_PLANS } from "@/queue/weekly-report";
 import { createSousChefMessage } from "@/services/anthropic-models";
 
-export const OWNER_WHISPER_FANOUT_JOB = "owner-whisper-fanout";
 export const OWNER_WHISPER_GENERATE_JOB = "owner-whisper-generate";
 
 const RETRY_LIMIT = 1;
-const FANOUT_RESTAURANT_CAP = 1000;
 
-let fanoutQueueReady: Promise<void> | null = null;
 let generateQueueReady: Promise<void> | null = null;
-
-async function ensureFanoutQueue() {
-  if (!fanoutQueueReady) {
-    fanoutQueueReady = getBoss()
-      .then((queue) => queue.createQueue(OWNER_WHISPER_FANOUT_JOB))
-      .catch((error) => {
-        fanoutQueueReady = null;
-        throw error;
-      });
-  }
-  await fanoutQueueReady;
-}
 
 async function ensureGenerateQueue() {
   if (!generateQueueReady) {
@@ -79,7 +64,6 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 export async function startOwnerWhisperWorker() {
-  await ensureFanoutQueue();
   await ensureGenerateQueue();
   const queue = await getBoss();
 
@@ -100,14 +84,6 @@ export async function startOwnerWhisperWorker() {
       }
     }
   );
-
-  // Daily at 03:00 UTC (= 07:00 GST). Land before UAE morning shift starts.
-  await queue.schedule(OWNER_WHISPER_FANOUT_JOB, "0 3 * * *", undefined, {
-    tz: "UTC",
-  });
-  await queue.work(OWNER_WHISPER_FANOUT_JOB, async () => {
-    await fanOutWhisperJobs();
-  });
 }
 
 /** Returns "YYYY-MM-DD" for "yesterday" in Asia/Dubai (UTC+4, no DST). */
@@ -136,79 +112,6 @@ function dubaiDateToUtcRange(isoDate: string): { start: Date; end: Date } {
   startUtc.setUTCHours(startUtc.getUTCHours() - 4);
   const endUtc = new Date(startUtc.getTime() + 24 * 60 * 60 * 1000);
   return { start: startUtc, end: endUtc };
-}
-
-async function fanOutWhisperJobs() {
-  const forDate = uaeYesterdayIso();
-  const whisperDate = new Date(forDate);
-  const suppressForWeekly = isDubaiMonday(Date.now());
-
-  // Find every restaurant on Pro/Portfolio that doesn't already have a whisper
-  // for this date. We don't filter for "had traffic" — quiet-day whispers are
-  // still useful (menu-health nudge).
-  const candidates = await prisma.restaurant.findMany({
-    where: {
-      subscriptionStatus: { in: ["active", "trial"] },
-      ownerWhispers: { none: { forDate: whisperDate } },
-      // On Mondays, weekly-eligible restaurants get the weekly report instead
-      // of the daily whisper — exclude them so there is exactly one morning
-      // moment. (Known edge: operator-account restaurants have no
-      // subscription.plan, so this NOT clause doesn't exclude them — see
-      // commit body.)
-      ...(suppressForWeekly
-        ? {
-            NOT: {
-              subscription: {
-                is: {
-                  plan: { in: [...WEEKLY_ELIGIBLE_PLANS] },
-                  status: { in: ["active", "trial"] },
-                },
-              },
-            },
-          }
-        : {}),
-      OR: [
-        {
-          subscription: {
-            is: {
-              plan: { in: ["pro", "fulltime", "portfolio"] },
-              status: { in: ["active", "trial"] },
-            },
-          },
-        },
-        {
-          operatorAccount: {
-            is: {
-              status: { in: ["active", "trial"] },
-            },
-          },
-        },
-      ],
-    },
-    select: { id: true },
-    take: FANOUT_RESTAURANT_CAP,
-  });
-
-  let enqueued = 0;
-
-  await ensureGenerateQueue();
-  const queue = await getBoss();
-
-  for (const r of candidates) {
-    await queue.send(
-      OWNER_WHISPER_GENERATE_JOB,
-      { restaurantId: r.id, forDate },
-      { retryLimit: RETRY_LIMIT }
-    );
-    enqueued++;
-  }
-
-  console.log(`[owner-whisper] forDate=${forDate} enqueued=${enqueued}`);
-  if (candidates.length === FANOUT_RESTAURANT_CAP) {
-    console.warn(
-      `[owner-whisper] fan-out hit cap of ${FANOUT_RESTAURANT_CAP} — consider raising`
-    );
-  }
 }
 
 async function buildSnapshot(restaurantId: string, forDate: string): Promise<WhisperSnapshot> {

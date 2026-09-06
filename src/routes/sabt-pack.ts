@@ -1,4 +1,4 @@
-// Sabt Pack API routes — owner-facing review surface + admin trigger.
+// Sabt Pack API routes — owner-facing review surface.
 //
 // Mounted at /api/sabt-pack. All endpoints require auth. Project endpoints
 // enforce tenant isolation (owner clerkId must match the restaurant) and the
@@ -10,10 +10,7 @@ import { ApiError } from "@/lib/errors";
 import { errorResponse } from "@/lib/http";
 import { getRestaurantEntitlements, getSabtPackUpgradeMessage } from "@/lib/entitlements";
 import { prisma } from "@/lib/prisma";
-import { requireAuth, requireAdmin } from "@/middleware/auth";
-import {
-  enqueueSabtPackForRestaurant,
-} from "@/queue/sabt-pack";
+import { requireAuth } from "@/middleware/auth";
 import { sundayOfThisWeekUae } from "@/services/sabt-pack";
 import { buildSabtPackBundle } from "@/services/sabt-pack/export-bundle";
 import { enforceExportRateLimit } from "@/services/ad-studio-ai/guards";
@@ -383,32 +380,6 @@ sabtPackRoute.post("/:projectId/export", async (c) => {
       fileSizeBytes: result.fileSizeBytes,
       postCount: approved.length,
     });
-  } catch (error) {
-    return errorResponse(c, error);
-  }
-});
-
-// =============================================================================
-// Admin-only trigger — used by the CLI and ops to fire a one-off run.
-// Mounted as a sub-route so the gate is explicit.
-// =============================================================================
-
-export const sabtPackAdminRoute = new Hono<{
-  Variables: { auth: { clerkId: string; email: string | null; fullName: string | null } };
-}>();
-sabtPackAdminRoute.use("*", requireAuth, requireAdmin);
-
-const triggerSchema = z.object({
-  restaurantId: z.string().min(1),
-  weekStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-});
-
-sabtPackAdminRoute.post("/trigger", async (c) => {
-  try {
-    const body = await c.req.json();
-    const parsed = triggerSchema.parse(body);
-    await enqueueSabtPackForRestaurant(parsed.restaurantId, parsed.weekStartDate);
-    return c.json({ ok: true, enqueued: true });
   } catch (error) {
     return errorResponse(c, error);
   }

@@ -106,79 +106,18 @@ export async function startAdStudioWorker() {
       }
     }
   );
-  // Schedule daily autopilot at 09:00 GST (05:00 UTC). pg-boss uses cron syntax.
-  await queue.schedule(AD_STUDIO_META_SYNC_FANOUT_JOB, "5 5 * * *", undefined, { tz: "UTC" });
-  await queue.work(AD_STUDIO_META_SYNC_FANOUT_JOB, async () => {
-    await fanOutMetaSyncJobs();
-  });
 }
 
 async function ensureAdStudioMetaSyncQueue() {
   if (!metaSyncQueueReady) {
     metaSyncQueueReady = getBoss()
-      .then(async (queue) => {
-        await queue.createQueue(AD_STUDIO_META_SYNC_JOB);
-        await queue.createQueue(AD_STUDIO_META_SYNC_FANOUT_JOB);
-      })
+      .then((queue) => queue.createQueue(AD_STUDIO_META_SYNC_JOB))
       .catch((error) => {
         metaSyncQueueReady = null;
         throw error;
       });
   }
   await metaSyncQueueReady;
-}
-
-const AD_STUDIO_META_SYNC_FANOUT_JOB = "ad-studio-meta-sync-fanout";
-
-/**
- * Fan out one job per active Meta-linked live campaign whose lastSyncedAt is
- * stale (>12h). The cron triggers this once a day; per-campaign sync runs
- * in parallel via the worker pool above.
- */
-async function fanOutMetaSyncJobs() {
-  const STALE_AFTER_HOURS = 12;
-  const TOKEN_WARN_BEFORE_DAYS = 7;
-  const cutoff = new Date(Date.now() - STALE_AFTER_HOURS * 60 * 60 * 1000);
-  const expiryWarnCutoff = new Date(Date.now() + TOKEN_WARN_BEFORE_DAYS * 24 * 60 * 60 * 1000);
-
-  // Proactively flip integrations near expiry to "expired" so the UI
-  // surfaces the reconnect prompt BEFORE a sync fails. Meta also revokes
-  // tokens on password change / 2FA reset / etc., so this is best-effort —
-  // the actual sync still has a 401/403 catch in syncLiveCampaignFromMeta.
-  const expiringSoon = await prisma.metaAdsIntegration.updateMany({
-    where: {
-      status: "connected",
-      tokenExpiresAt: { not: null, lte: expiryWarnCutoff },
-    },
-    data: { status: "expired" },
-  });
-  if (expiringSoon.count > 0) {
-    console.log(`[ad-studio meta-sync] marked ${expiringSoon.count} integrations expired`);
-  }
-
-  const due = await prisma.adLiveCampaign.findMany({
-    where: {
-      autoSync: true,
-      metaIntegrationId: { not: null },
-      status: { in: ["linked", "reporting"] },
-      OR: [{ lastSyncedAt: null }, { lastSyncedAt: { lt: cutoff } }],
-      metaIntegration: { status: "connected" },
-    },
-    select: { id: true },
-    take: 200,
-  });
-
-  await ensureAdStudioMetaSyncQueue();
-  const queue = await getBoss();
-  for (const c of due) {
-    await queue.send(AD_STUDIO_META_SYNC_JOB, { liveCampaignId: c.id }, { retryLimit: 1 });
-  }
-  if (due.length === 200) {
-    console.warn(
-      `[ad-studio meta-sync] fan-out hit cap of 200 — Bustan now has 200+ active autosync campaigns. Consider raising the take cap.`
-    );
-  }
-  console.log(`[ad-studio meta-sync] fanned out ${due.length} sync jobs`);
 }
 
 export async function enqueueMetaSync(liveCampaignId: string) {

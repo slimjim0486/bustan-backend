@@ -13,23 +13,20 @@ import { env } from "@/lib/env";
 import { initSentry } from "@/lib/sentry";
 import { seedReferenceData } from "@/lib/startup-seed";
 import { startAdStudioWorker } from "@/queue/ad-studio-jobs";
-import { startWhatsAppRetentionWorker } from "@/queue/whatsapp-retention";
 import { startOwnerChatMemoryWorker } from "@/queue/owner-chat-memory";
 import { startOwnerWhisperWorker } from "@/queue/owner-whisper";
 import { startWeeklyReportWorker } from "@/queue/weekly-report";
 import { startProactiveNudgeWorker } from "@/queue/proactive-nudge";
-import { startGscSyncWorker } from "@/queue/gsc-sync";
-import { startSabtPackWorker } from "@/queue/sabt-pack";
 import { startEventStagerWorker } from "@/queue/event-stager";
 import { startCompetitorIntelWorker } from "@/queue/competitor-intel";
+import { unscheduleLegacyCrons } from "@/queue/unschedule-legacy";
 import { startCoworkerDailyBriefWorker } from "@/queue/coworker-daily-brief";
 import { startDraftShipWorker } from "@/queue/draft-ship";
 import { startBookingExpiryWorker } from "@/queue/booking-expiry";
 import { startBookingRemindersWorker } from "@/queue/booking-reminders";
-import { startBookingDaySummaryWorker } from "@/queue/booking-day-summary";
 import { startBookingAgentReplyWorker } from "@/queue/booking-agent-reply";
 import { adStudioRoute, adStudioPublicRoute } from "@/routes/ad-studio";
-import { sabtPackRoute, sabtPackAdminRoute } from "@/routes/sabt-pack";
+import { sabtPackRoute } from "@/routes/sabt-pack";
 import { marketPulseRoute } from "@/routes/market-pulse";
 import { adminRoute } from "@/routes/admin";
 import { analyticsRoute } from "@/routes/analytics";
@@ -92,7 +89,6 @@ app.route("/api/seo", seoRoute);
 app.route("/api/ad-studio-public", adStudioPublicRoute);
 app.route("/api/ad-studio", adStudioRoute);
 app.route("/api/sabt-pack", sabtPackRoute);
-app.route("/api/admin/sabt-pack", sabtPackAdminRoute);
 app.route("/api/market-pulse", marketPulseRoute);
 app.route("/api/coworker", coworkerRoute);
 app.route("/api/admin/coworker", coworkerAdminRoute);
@@ -123,20 +119,19 @@ seedReferenceData()
     console.error("Reference data seeding failed", error);
   });
 
+// All time-based (cron) jobs were removed on 2026-09-06. Only on-demand
+// queue workers remain; this sweep deletes any pg-boss schedule rows that
+// an older build may have left behind.
+unscheduleLegacyCrons().catch((error) => {
+  console.error("pg-boss legacy cron cleanup failed", error);
+});
+
 startAdStudioWorker()
   .then(() => {
     console.log("pg-boss ad-studio worker started");
   })
   .catch((error) => {
     console.error("pg-boss ad-studio worker failed to start", error);
-  });
-
-startWhatsAppRetentionWorker()
-  .then(() => {
-    console.log("pg-boss whatsapp-retention worker started");
-  })
-  .catch((error) => {
-    console.error("pg-boss whatsapp-retention worker failed to start", error);
   });
 
 startOwnerChatMemoryWorker()
@@ -169,22 +164,6 @@ startProactiveNudgeWorker()
   })
   .catch((error) => {
     console.error("pg-boss proactive-nudge worker failed to start", error);
-  });
-
-startGscSyncWorker()
-  .then(() => {
-    console.log("pg-boss gsc-sync worker started");
-  })
-  .catch((error) => {
-    console.error("pg-boss gsc-sync worker failed to start", error);
-  });
-
-startSabtPackWorker()
-  .then(() => {
-    console.log("pg-boss sabt-pack worker started");
-  })
-  .catch((error) => {
-    console.error("pg-boss sabt-pack worker failed to start", error);
   });
 
 startEventStagerWorker()
@@ -233,14 +212,6 @@ startBookingRemindersWorker()
   })
   .catch((error) => {
     console.error("pg-boss booking-reminders worker failed to start", error);
-  });
-
-startBookingDaySummaryWorker()
-  .then(() => {
-    console.log("pg-boss booking-day-summary worker started");
-  })
-  .catch((error) => {
-    console.error("pg-boss booking-day-summary worker failed to start", error);
   });
 
 startBookingAgentReplyWorker()

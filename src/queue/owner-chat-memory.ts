@@ -1,5 +1,7 @@
-// Nightly memory-extraction job for Sous Chef.
+// Memory-extraction job for Sous Chef (on-demand only).
 // Distills durable facts from the last 24h of owner chat into OwnerChatMemory.
+// The nightly cron fanout was removed on 2026-09-06; extraction now runs only
+// when enqueued explicitly (enqueueExtractionForRestaurant).
 // Pattern mirrors ad-studio-jobs.ts.
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -17,28 +19,13 @@ import { STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
 import { getBoss } from "@/queue/boss";
 import { createSousChefMessage } from "@/services/anthropic-models";
 
-export const OWNER_CHAT_MEMORY_FANOUT_JOB = "owner-chat-memory-fanout";
 export const OWNER_CHAT_MEMORY_EXTRACT_JOB = "owner-chat-memory-extract";
 
 const RETRY_LIMIT = 1;
 const MAX_NEW_MEMORIES_PER_NIGHT = 5;
 const LOOKBACK_HOURS = 24;
-const FANOUT_RESTAURANT_CAP = 500;
 
-let fanoutQueueReady: Promise<void> | null = null;
 let extractQueueReady: Promise<void> | null = null;
-
-async function ensureFanoutQueue() {
-  if (!fanoutQueueReady) {
-    fanoutQueueReady = getBoss()
-      .then((queue) => queue.createQueue(OWNER_CHAT_MEMORY_FANOUT_JOB))
-      .catch((error) => {
-        fanoutQueueReady = null;
-        throw error;
-      });
-  }
-  await fanoutQueueReady;
-}
 
 async function ensureExtractQueue() {
   if (!extractQueueReady) {
@@ -67,7 +54,6 @@ function getClient() {
 }
 
 export async function startOwnerChatMemoryWorker() {
-  await ensureFanoutQueue();
   await ensureExtractQueue();
   const queue = await getBoss();
 
@@ -88,50 +74,6 @@ export async function startOwnerChatMemoryWorker() {
       }
     }
   );
-
-  // Daily at 01:00 UTC (= 05:00 GST). Runs before the 07:00 GST Whisper so
-  // extracted memories are fresh when the briefing is generated.
-  await queue.schedule(OWNER_CHAT_MEMORY_FANOUT_JOB, "0 1 * * *", undefined, {
-    tz: "UTC",
-  });
-  await queue.work(OWNER_CHAT_MEMORY_FANOUT_JOB, async () => {
-    await fanOutMemoryJobs();
-  });
-}
-
-async function fanOutMemoryJobs() {
-  const cutoff = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000);
-
-  // Find restaurants with new owner-authored messages in the last LOOKBACK_HOURS.
-  // (Assistant-only or whisper-only days produce nothing to extract.)
-  const distinctRows = await prisma.ownerChatMessage.findMany({
-    where: {
-      role: "user",
-      source: "chat",
-      createdAt: { gte: cutoff },
-    },
-    distinct: ["restaurantId"],
-    orderBy: { createdAt: "desc" },
-    select: { restaurantId: true },
-    take: FANOUT_RESTAURANT_CAP,
-  });
-
-  await ensureExtractQueue();
-  const queue = await getBoss();
-  for (const r of distinctRows) {
-    await queue.send(
-      OWNER_CHAT_MEMORY_EXTRACT_JOB,
-      { restaurantId: r.restaurantId },
-      { retryLimit: RETRY_LIMIT }
-    );
-  }
-  const rows = distinctRows;
-  if (rows.length === FANOUT_RESTAURANT_CAP) {
-    console.warn(
-      `[owner-chat-memory] fan-out hit cap of ${FANOUT_RESTAURANT_CAP} — consider raising`
-    );
-  }
-  console.log(`[owner-chat-memory] fanned out ${rows.length} extract jobs`);
 }
 
 interface ExtractedMemory {

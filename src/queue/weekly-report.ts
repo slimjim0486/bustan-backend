@@ -1,6 +1,7 @@
-// Weekly Report job for Bustan. Generates an end-of-week management review for
-// every active paid-role restaurant every Monday. Cron: 03:00 UTC Monday = 07:00 GST.
-// Mirrors owner-whisper.ts.
+// Weekly Report job for Bustan (on-demand only). Generates an end-of-week
+// management review for one restaurant when enqueued explicitly
+// (enqueueWeeklyReportForRestaurant). The Monday 07:00 GST cron fanout was
+// removed on 2026-09-06. Mirrors owner-whisper.ts.
 
 import Anthropic from "@anthropic-ai/sdk";
 import PgBoss from "pg-boss";
@@ -19,28 +20,13 @@ import { STANDING_INSTRUCTION_TYPE } from "@/lib/standing-instructions";
 import { getBoss } from "@/queue/boss";
 import { createSousChefMessage } from "@/services/anthropic-models";
 
-export const WEEKLY_REPORT_FANOUT_JOB = "weekly-report-fanout";
 export const WEEKLY_REPORT_GENERATE_JOB = "weekly-report-generate";
 
 export const WEEKLY_ELIGIBLE_PLANS = ["pro", "fulltime", "portfolio"] as const;
 
 const RETRY_LIMIT = 1;
-const FANOUT_RESTAURANT_CAP = 1000;
 
-let fanoutQueueReady: Promise<void> | null = null;
 let generateQueueReady: Promise<void> | null = null;
-
-async function ensureFanoutQueue() {
-  if (!fanoutQueueReady) {
-    fanoutQueueReady = getBoss()
-      .then((queue) => queue.createQueue(WEEKLY_REPORT_FANOUT_JOB))
-      .catch((error) => {
-        fanoutQueueReady = null;
-        throw error;
-      });
-  }
-  await fanoutQueueReady;
-}
 
 async function ensureGenerateQueue() {
   if (!generateQueueReady) {
@@ -111,7 +97,6 @@ function dubaiWeekToUtcRange(weekStartIso: string): { start: Date; end: Date } {
 }
 
 export async function startWeeklyReportWorker() {
-  await ensureFanoutQueue();
   await ensureGenerateQueue();
   const queue = await getBoss();
 
@@ -131,57 +116,6 @@ export async function startWeeklyReportWorker() {
       }
     }
   );
-
-  // Monday 03:00 UTC (= 07:00 GST).
-  await queue.schedule(WEEKLY_REPORT_FANOUT_JOB, "0 3 * * 1", undefined, { tz: "UTC" });
-  await queue.work(WEEKLY_REPORT_FANOUT_JOB, async () => {
-    await fanOutWeeklyReportJobs();
-  });
-}
-
-async function fanOutWeeklyReportJobs() {
-  const weekStart = lastCompletedWeekStartIso(Date.now());
-  const weekStartDate = new Date(weekStart);
-
-  const candidates = await prisma.restaurant.findMany({
-    where: {
-      // Booking-era tenants only — the snapshot builder is bookings-only, so
-      // grandfathered RESTAURANT-businessType tenants would get all-zero,
-      // wrong-domain reports.
-      businessType: { in: ["SALON", "HOME_SERVICES"] },
-      subscriptionStatus: { in: ["active", "trial"] },
-      weeklyReports: { none: { weekStart: weekStartDate } },
-      OR: [
-        {
-          subscription: {
-            is: {
-              plan: { in: [...WEEKLY_ELIGIBLE_PLANS] },
-              status: { in: ["active", "trial"] },
-            },
-          },
-        },
-        { operatorAccount: { is: { status: { in: ["active", "trial"] } } } },
-      ],
-    },
-    select: { id: true },
-    take: FANOUT_RESTAURANT_CAP,
-  });
-
-  await ensureGenerateQueue();
-  const queue = await getBoss();
-  let enqueued = 0;
-  for (const r of candidates) {
-    await queue.send(
-      WEEKLY_REPORT_GENERATE_JOB,
-      { restaurantId: r.id, weekStart },
-      { retryLimit: RETRY_LIMIT }
-    );
-    enqueued++;
-  }
-  console.log(`[weekly-report] weekStart=${weekStart} enqueued=${enqueued}`);
-  if (candidates.length === FANOUT_RESTAURANT_CAP) {
-    console.warn(`[weekly-report] fan-out hit cap of ${FANOUT_RESTAURANT_CAP} — consider raising`);
-  }
 }
 
 async function buildWeeklySnapshot(
